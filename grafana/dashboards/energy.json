@@ -1,0 +1,74 @@
+{
+  "title": "PLC4X Energy Monitor",
+  "uid": "plc4x-energy",
+  "tags": ["plc4x", "energy"],
+  "timezone": "browser",
+  "refresh": "5s",
+  "time": {"from": "now-6h", "to": "now"},
+  "templating": {
+    "list": [{
+      "name": "device",
+      "type": "query",
+      "datasource": {"type": "influxdb", "uid": "InfluxDB-PLC4X"},
+      "query": "import \"influxdata/influxdb/schema\"\nschema.tagValues(bucket: \"plc4x_raw\", tag: \"device\", predicate: (r) => r._measurement == \"plc4x_tags\")",
+      "refresh": 2
+    }]
+  },
+  "panels": [
+    {
+      "id": 1, "title": "Voltage", "type": "gauge",
+      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 0},
+      "datasource": {"type": "influxdb", "uid": "InfluxDB-PLC4X"},
+      "targets": [{"datasource": {"type": "influxdb", "uid": "InfluxDB-PLC4X"}, "query": "from(bucket: \"plc4x_raw\")\n  |> range(start: -1m)\n  |> filter(fn: (r) => r._measurement == \"plc4x_tags\")\n  |> filter(fn: (r) => r.device == \"${device}\")\n  |> filter(fn: (r) => r.alias =~ /volt/i)\n  |> filter(fn: (r) => r._field == \"value\")\n  |> last()", "refId": "A"}],
+      "fieldConfig": {"defaults": {"unit": "volt", "min": 0, "max": 500, "thresholds": {"steps": [{"color": "red", "value": null}, {"color": "yellow", "value": 180}, {"color": "green", "value": 210}, {"color": "yellow", "value": 250}, {"color": "red", "value": 270}]}}}
+    },
+    {
+      "id": 2, "title": "Current", "type": "gauge",
+      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 0},
+      "datasource": {"type": "influxdb", "uid": "InfluxDB-PLC4X"},
+      "targets": [{"datasource": {"type": "influxdb", "uid": "InfluxDB-PLC4X"}, "query": "from(bucket: \"plc4x_raw\")\n  |> range(start: -1m)\n  |> filter(fn: (r) => r._measurement == \"plc4x_tags\")\n  |> filter(fn: (r) => r.device == \"${device}\")\n  |> filter(fn: (r) => r.alias =~ /current/i)\n  |> filter(fn: (r) => r._field == \"value\")\n  |> last()", "refId": "A"}],
+      "fieldConfig": {"defaults": {"unit": "amp", "min": 0, "max": 100, "thresholds": {"steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 60}, {"color": "red", "value": 80}]}}}
+    },
+    {
+      "id": 3, "title": "Power", "type": "gauge",
+      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 0},
+      "datasource": {"type": "influxdb", "uid": "InfluxDB-PLC4X"},
+      "targets": [{"datasource": {"type": "influxdb", "uid": "InfluxDB-PLC4X"}, "query": "from(bucket: \"plc4x_raw\")\n  |> range(start: -1m)\n  |> filter(fn: (r) => r._measurement == \"plc4x_tags\")\n  |> filter(fn: (r) => r.device == \"${device}\")\n  |> filter(fn: (r) => r.alias =~ /power/i)\n  |> filter(fn: (r) => r._field == \"value\")\n  |> last()", "refId": "A"}],
+      "fieldConfig": {"defaults": {"unit": "watt", "min": 0, "thresholds": {"steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 5000}, {"color": "red", "value": 8000}]}}}
+    },
+    {
+      "id": 4, "title": "Voltage Over Time", "type": "timeseries",
+      "gridPos": {"h": 10, "w": 12, "x": 0, "y": 8},
+      "datasource": {"type": "influxdb", "uid": "InfluxDB-PLC4X"},
+      "targets": [{"datasource": {"type": "influxdb", "uid": "InfluxDB-PLC4X"}, "query": "from(bucket: \"plc4x_raw\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"plc4x_tags\")\n  |> filter(fn: (r) => r.device == \"${device}\")\n  |> filter(fn: (r) => r.alias =~ /volt/i)\n  |> filter(fn: (r) => r._field == \"value\")\n  |> aggregateWindow(every: v.windowPeriod, fn: mean, createEmpty: false)", "refId": "A"}],
+      "fieldConfig": {"defaults": {"unit": "volt", "custom": {"lineWidth": 2, "fillOpacity": 10}}}
+    },
+    {
+      "id": 5, "title": "Current Over Time", "type": "timeseries",
+      "gridPos": {"h": 10, "w": 12, "x": 12, "y": 8},
+      "datasource": {"type": "influxdb", "uid": "InfluxDB-PLC4X"},
+      "targets": [{"datasource": {"type": "influxdb", "uid": "InfluxDB-PLC4X"}, "query": "from(bucket: \"plc4x_raw\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"plc4x_tags\")\n  |> filter(fn: (r) => r.device == \"${device}\")\n  |> filter(fn: (r) => r.alias =~ /current/i)\n  |> filter(fn: (r) => r._field == \"value\")\n  |> aggregateWindow(every: v.windowPeriod, fn: mean, createEmpty: false)", "refId": "A"}],
+      "fieldConfig": {"defaults": {"unit": "amp", "custom": {"lineWidth": 2, "fillOpacity": 10}}}
+    },
+    {
+      "id": 6, "title": "Power Over Time", "type": "timeseries",
+      "gridPos": {"h": 10, "w": 12, "x": 0, "y": 18},
+      "datasource": {"type": "influxdb", "uid": "InfluxDB-PLC4X"},
+      "targets": [{"datasource": {"type": "influxdb", "uid": "InfluxDB-PLC4X"}, "query": "from(bucket: \"plc4x_raw\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"plc4x_tags\")\n  |> filter(fn: (r) => r.device == \"${device}\")\n  |> filter(fn: (r) => r.alias =~ /power/i)\n  |> filter(fn: (r) => r._field == \"value\")\n  |> aggregateWindow(every: v.windowPeriod, fn: mean, createEmpty: false)", "refId": "A"}],
+      "fieldConfig": {"defaults": {"unit": "watt", "custom": {"lineWidth": 2, "fillOpacity": 15}}}
+    },
+    {
+      "id": 7, "title": "Power Factor & Frequency", "type": "timeseries",
+      "gridPos": {"h": 10, "w": 12, "x": 12, "y": 18},
+      "datasource": {"type": "influxdb", "uid": "InfluxDB-PLC4X"},
+      "targets": [{"datasource": {"type": "influxdb", "uid": "InfluxDB-PLC4X"}, "query": "from(bucket: \"plc4x_raw\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"plc4x_tags\")\n  |> filter(fn: (r) => r.device == \"${device}\")\n  |> filter(fn: (r) => r.alias =~ /factor|freq/i)\n  |> filter(fn: (r) => r._field == \"value\")\n  |> aggregateWindow(every: v.windowPeriod, fn: mean, createEmpty: false)", "refId": "A"}],
+      "fieldConfig": {"defaults": {"custom": {"lineWidth": 2}}}
+    },
+    {
+      "id": 8, "title": "All Energy Values", "type": "table",
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 28},
+      "datasource": {"type": "influxdb", "uid": "InfluxDB-PLC4X"},
+      "targets": [{"datasource": {"type": "influxdb", "uid": "InfluxDB-PLC4X"}, "query": "from(bucket: \"plc4x_raw\")\n  |> range(start: -1m)\n  |> filter(fn: (r) => r._measurement == \"plc4x_tags\")\n  |> filter(fn: (r) => r.device == \"${device}\")\n  |> filter(fn: (r) => r._field == \"value\")\n  |> last()\n  |> group()\n  |> keep(columns: [\"alias\", \"_value\", \"_time\"])", "refId": "A"}]
+    }
+  ]
+}

@@ -1,0 +1,14 @@
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+python-multipart==0.0.19
+slowapi==0.1.9
+pyyaml==6.0.2
+docker==7.1.0
+PyJWT==2.9.0
+filelock==3.16.0
+asyncua==1.1.5
+paho-mqtt==1.6.1
+influxdb-client==1.40.0
+reportlab==4.2.5
+requests==2.32.3
+aiosqlite==0.20.0

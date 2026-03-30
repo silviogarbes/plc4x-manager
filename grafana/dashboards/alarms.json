@@ -1,0 +1,66 @@
+{
+  "title": "PLC4X Alarms & Anomalies",
+  "uid": "plc4x-alarms",
+  "tags": ["plc4x", "alarms"],
+  "timezone": "browser",
+  "refresh": "30s",
+  "time": {"from": "now-24h", "to": "now"},
+  "panels": [
+    {
+      "id": 1, "title": "Active Anomalies", "type": "stat",
+      "gridPos": {"h": 4, "w": 8, "x": 0, "y": 0},
+      "datasource": {"type": "influxdb", "uid": "InfluxDB-PLC4X"},
+      "targets": [{"datasource": {"type": "influxdb", "uid": "InfluxDB-PLC4X"}, "query": "from(bucket: \"plc4x_raw\")\n  |> range(start: -30m)\n  |> filter(fn: (r) => r._measurement == \"plc4x_anomaly\")\n  |> filter(fn: (r) => r._field == \"is_anomaly\")\n  |> last()\n  |> filter(fn: (r) => r._value == 1)\n  |> group()\n  |> count()", "refId": "A"}],
+      "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"steps": [{"color": "green", "value": null}, {"color": "red", "value": 1}]}}}
+    },
+    {
+      "id": 2, "title": "Devices Online", "type": "stat",
+      "gridPos": {"h": 4, "w": 8, "x": 8, "y": 0},
+      "datasource": {"type": "influxdb", "uid": "InfluxDB-PLC4X"},
+      "targets": [{"datasource": {"type": "influxdb", "uid": "InfluxDB-PLC4X"}, "query": "from(bucket: \"plc4x_raw\")\n  |> range(start: -5m)\n  |> filter(fn: (r) => r._measurement == \"plc4x_health\")\n  |> filter(fn: (r) => r._field == \"status\")\n  |> last()\n  |> filter(fn: (r) => r._value == 1)\n  |> group()\n  |> count()", "refId": "A"}],
+      "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"steps": [{"color": "green", "value": null}]}}}
+    },
+    {
+      "id": 3, "title": "Devices with Errors", "type": "stat",
+      "gridPos": {"h": 4, "w": 8, "x": 16, "y": 0},
+      "datasource": {"type": "influxdb", "uid": "InfluxDB-PLC4X"},
+      "targets": [{"datasource": {"type": "influxdb", "uid": "InfluxDB-PLC4X"}, "query": "from(bucket: \"plc4x_raw\")\n  |> range(start: -5m)\n  |> filter(fn: (r) => r._measurement == \"plc4x_health\")\n  |> filter(fn: (r) => r._field == \"tags_error\")\n  |> last()\n  |> filter(fn: (r) => r._value > 0)\n  |> group()\n  |> count()", "refId": "A"}],
+      "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"steps": [{"color": "green", "value": null}, {"color": "red", "value": 1}]}}}
+    },
+    {
+      "id": 4, "title": "Anomaly Score by Tag", "type": "timeseries",
+      "gridPos": {"h": 10, "w": 24, "x": 0, "y": 4},
+      "datasource": {"type": "influxdb", "uid": "InfluxDB-PLC4X"},
+      "targets": [{"datasource": {"type": "influxdb", "uid": "InfluxDB-PLC4X"}, "query": "from(bucket: \"plc4x_raw\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"plc4x_anomaly\")\n  |> filter(fn: (r) => r._field == \"score\")\n  |> aggregateWindow(every: v.windowPeriod, fn: mean, createEmpty: false)", "refId": "A"}],
+      "fieldConfig": {"defaults": {"custom": {"lineWidth": 1, "fillOpacity": 10}, "thresholds": {"steps": [{"color": "green", "value": null}, {"color": "red", "value": -0.1}]}}}
+    },
+    {
+      "id": 5, "title": "Anomaly Events (is_anomaly = 1)", "type": "timeseries",
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 14},
+      "datasource": {"type": "influxdb", "uid": "InfluxDB-PLC4X"},
+      "targets": [{"datasource": {"type": "influxdb", "uid": "InfluxDB-PLC4X"}, "query": "from(bucket: \"plc4x_raw\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"plc4x_anomaly\")\n  |> filter(fn: (r) => r._field == \"is_anomaly\")\n  |> filter(fn: (r) => r._value == 1)", "refId": "A"}],
+      "fieldConfig": {"defaults": {"custom": {"drawStyle": "points", "pointSize": 8}, "color": {"fixedColor": "red", "mode": "fixed"}}}
+    },
+    {
+      "id": 6, "title": "Trend Rate by Tag (change per hour)", "type": "timeseries",
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 22},
+      "datasource": {"type": "influxdb", "uid": "InfluxDB-PLC4X"},
+      "targets": [{"datasource": {"type": "influxdb", "uid": "InfluxDB-PLC4X"}, "query": "from(bucket: \"plc4x_raw\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"plc4x_trend\")\n  |> filter(fn: (r) => r._field == \"rate_per_hour\")", "refId": "A"}],
+      "fieldConfig": {"defaults": {"unit": "/h", "custom": {"lineWidth": 2}}}
+    },
+    {
+      "id": 7, "title": "Device Health History", "type": "timeseries",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 30},
+      "datasource": {"type": "influxdb", "uid": "InfluxDB-PLC4X"},
+      "targets": [{"datasource": {"type": "influxdb", "uid": "InfluxDB-PLC4X"}, "query": "from(bucket: \"plc4x_raw\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"plc4x_health\")\n  |> filter(fn: (r) => r._field == \"status\")\n  |> aggregateWindow(every: v.windowPeriod, fn: last, createEmpty: false)", "refId": "A"}],
+      "fieldConfig": {"defaults": {"mappings": [{"type": "value", "options": {"0": {"text": "Offline"}, "1": {"text": "Online"}}}], "custom": {"fillOpacity": 30}}}
+    },
+    {
+      "id": 8, "title": "Read Latency History", "type": "timeseries",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 30},
+      "datasource": {"type": "influxdb", "uid": "InfluxDB-PLC4X"},
+      "targets": [{"datasource": {"type": "influxdb", "uid": "InfluxDB-PLC4X"}, "query": "from(bucket: \"plc4x_raw\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"plc4x_health\")\n  |> filter(fn: (r) => r._field == \"latency_ms\")\n  |> aggregateWindow(every: v.windowPeriod, fn: mean, createEmpty: false)", "refId": "A"}],
+      "fieldConfig": {"defaults": {"unit": "ms", "custom": {"lineWidth": 2, "fillOpacity": 10}, "thresholds": {"steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 500}, {"color": "red", "value": 2000}]}}}
+    }
+  ]
+}

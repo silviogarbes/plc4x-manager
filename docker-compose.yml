@@ -1,0 +1,229 @@
+services:
+  # OPC-UA Server (official PLC4X)
+  plc4x-server:
+    build:
+      context: ./server
+      args:
+        PLC4X_VERSION: ${PLC4X_VERSION:-0.13.1}
+    ports:
+      - "${OPCUA_PORT:-12687}:12687"
+    volumes:
+      - config-data:/app/config
+      - security-data:/app/security
+    environment:
+      - JVM_OPTS=${JVM_OPTS:--Xmx512m -Xms128m}
+      - PLC_READONLY=${PLC_READONLY:-true}
+    networks:
+      - backend
+    restart: unless-stopped
+    depends_on:
+      plc4x-admin:
+        condition: service_started
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f plc4x-opcua-server || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+    mem_limit: 1g
+    cpus: 1.0
+
+  # Web Admin Panel
+  plc4x-admin:
+    build: ./admin
+    ports:
+      - "${ADMIN_PORT:-3080}:8080"
+      - "${ADMIN_HTTPS_PORT:-3443}:8443"
+    volumes:
+      - config-data:/app/config
+      - security-data:/app/security
+      - /var/run/docker.sock:/var/run/docker.sock
+      - .:/app/repo
+    environment:
+      - CONFIG_PATH=/app/config/config.yml
+      - PLC4X_CONTAINER=plc4x-server
+      - BACKUP_DIR=/app/config/backups
+      - SECURITY_DIR=/app/security
+      - BACKUP_MAX_FILES=50
+      # Authentication (CHANGE THESE IN PRODUCTION)
+      - ADMIN_USERNAME=${ADMIN_USERNAME:-admin}
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD:-admin}
+      - JWT_SECRET=${JWT_SECRET:-}
+      - JWT_EXPIRY_HOURS=${JWT_EXPIRY_HOURS:-24}
+      - API_KEY=${API_KEY:-}
+      - PLC_READONLY=${PLC_READONLY:-true}
+      # MQTT
+      - MQTT_BROKER=mosquitto
+      - MQTT_PORT=1883
+      - MQTT_ENABLED=true
+      - MQTT_TOPIC_PREFIX=plc4x
+      - MQTT_USERNAME=${MQTT_USERNAME:-plc4x}
+      - MQTT_PASSWORD=${MQTT_PASSWORD:-plc4x}
+      # InfluxDB
+      - INFLUXDB_URL=http://influxdb:8086
+      - INFLUXDB_TOKEN=${INFLUXDB_TOKEN:-plc4x-token}
+      - INFLUXDB_ORG=${INFLUXDB_ORG:-plc4x}
+      - INFLUXDB_BUCKET=${INFLUXDB_BUCKET:-plc4x_raw}
+      - INFLUXDB_ENABLED=true
+      # Grafana proxy
+      - GRAFANA_URL=http://grafana:3000
+      - GRAFANA_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin}
+    networks:
+      - frontend
+      - backend
+    depends_on:
+      mosquitto:
+        condition: service_started
+      influxdb:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8080/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "3"
+    mem_limit: 512m
+    cpus: 0.5
+
+  # Time-Series Database
+  influxdb:
+    build: ./influxdb
+    ports:
+      - "${INFLUXDB_PORT:-8086}:8086"
+    volumes:
+      - influxdb-data:/var/lib/influxdb2
+    environment:
+      - DOCKER_INFLUXDB_INIT_MODE=setup
+      - DOCKER_INFLUXDB_INIT_USERNAME=admin
+      - DOCKER_INFLUXDB_INIT_PASSWORD=${INFLUXDB_ADMIN_PASSWORD:-plc4x-admin}
+      - DOCKER_INFLUXDB_INIT_ORG=${INFLUXDB_ORG:-plc4x}
+      - DOCKER_INFLUXDB_INIT_BUCKET=${INFLUXDB_BUCKET:-plc4x_raw}
+      - DOCKER_INFLUXDB_INIT_RETENTION=${INFLUXDB_RETENTION_DAYS:-90}d
+      - DOCKER_INFLUXDB_INIT_ADMIN_TOKEN=${INFLUXDB_TOKEN:-plc4x-token}
+    networks:
+      - backend
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "influx", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "3"
+    mem_limit: 512m
+    cpus: 0.5
+
+  # Grafana Dashboards
+  grafana:
+    build: ./grafana
+    ports:
+      - "${GRAFANA_PORT:-3000}:3000"
+    volumes:
+      - grafana-data:/var/lib/grafana
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin}
+      - GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH=/var/lib/grafana/dashboards/overview.json
+      - GF_INSTALL_PLUGINS=grafana-mqtt-datasource
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_SECURITY_ALLOW_EMBEDDING=true
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer
+      - GF_SECURITY_COOKIE_SAMESITE=none
+    networks:
+      - frontend
+      - backend
+    depends_on:
+      influxdb:
+        condition: service_healthy
+      mosquitto:
+        condition: service_started
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "3"
+    mem_limit: 256m
+    cpus: 0.5
+
+  # ML Predictions (Prophet, Isolation Forest)
+  plc4x-ml:
+    build: ./ml
+    environment:
+      - INFLUXDB_URL=http://influxdb:8086
+      - INFLUXDB_TOKEN=${INFLUXDB_TOKEN:-plc4x-token}
+      - INFLUXDB_ORG=${INFLUXDB_ORG:-plc4x}
+      - INFLUXDB_BUCKET=${INFLUXDB_BUCKET:-plc4x_raw}
+      - ML_INTERVAL_MINUTES=${ML_INTERVAL_MINUTES:-5}
+      - ML_FORECAST_HOURS=${ML_FORECAST_HOURS:-2}
+      - ML_MIN_POINTS=${ML_MIN_POINTS:-100}
+      - CONFIG_PATH=/app/config/config.yml
+    volumes:
+      - config-data:/app/config
+    networks:
+      - backend
+    depends_on:
+      influxdb:
+        condition: service_healthy
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "3"
+    mem_limit: 4g
+
+  # MQTT Broker
+  mosquitto:
+    build: ./mosquitto
+    ports:
+      - "127.0.0.1:${MQTT_PORT:-1883}:1883"
+    volumes:
+      - mosquitto-data:/mosquitto/data
+    environment:
+      - MQTT_USERNAME=${MQTT_USERNAME:-plc4x}
+      - MQTT_PASSWORD=${MQTT_PASSWORD:-plc4x}
+    networks:
+      - backend
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "2m"
+        max-file: "2"
+    mem_limit: 64m
+    cpus: 0.25
+
+volumes:
+  # Named volumes persist data across container restarts and rebuilds.
+  # To back up:   docker run --rm -v plc4x-manager_config-data:/data -v $(pwd):/backup alpine tar czf /backup/config-backup.tar.gz -C /data .
+  # To restore:   docker run --rm -v plc4x-manager_config-data:/data -v $(pwd):/backup alpine tar xzf /backup/config-backup.tar.gz -C /data
+  config-data:      # config.yml + backups (survives restarts)
+  security-data:    # certificates, keystore, PKI, users (survives restarts)
+  mosquitto-data:   # MQTT broker persistent data
+  influxdb-data:    # InfluxDB time-series data
+  grafana-data:     # Grafana dashboards, plugins, sessions
+
+networks:
+  frontend:
+    # Public-facing services: admin panel (user browser) and Grafana dashboards
+    driver: bridge
+  backend:
+    # Backend services: OPC-UA server, InfluxDB, MQTT broker, ML
+    # NOT internal — plc4x-server needs to reach PLCs on the external network
+    driver: bridge

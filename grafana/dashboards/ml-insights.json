@@ -1,0 +1,362 @@
+{
+  "title": "PLC4X ML Insights",
+  "uid": "plc4x-ml-insights",
+  "tags": ["plc4x", "ml", "ai", "analytics"],
+  "timezone": "browser",
+  "refresh": "2m",
+  "time": {"from": "now-24h", "to": "now"},
+  "schemaVersion": 38,
+  "version": 1,
+  "templating": {
+    "list": [
+      {
+        "name": "device",
+        "label": "Device",
+        "type": "query",
+        "datasource": {"type": "influxdb", "uid": "InfluxDB-PLC4X"},
+        "query": "import \"influxdata/influxdb/schema\"\nschema.tagValues(bucket: \"plc4x_raw\", tag: \"device\", predicate: (r) => r._measurement == \"plc4x_ml\")",
+        "refresh": 2,
+        "multi": false,
+        "includeAll": true,
+        "allValue": ".*"
+      },
+      {
+        "name": "tag",
+        "label": "Tag",
+        "type": "query",
+        "datasource": {"type": "influxdb", "uid": "InfluxDB-PLC4X"},
+        "query": "import \"influxdata/influxdb/schema\"\nschema.tagValues(bucket: \"plc4x_raw\", tag: \"alias\", predicate: (r) => r._measurement == \"plc4x_ml\" and r.device == \"${device}\")",
+        "refresh": 2,
+        "multi": false,
+        "includeAll": true,
+        "allValue": ".*"
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Anomaly Ensemble Score — ${device} / ${tag}",
+      "type": "timeseries",
+      "gridPos": {"h": 9, "w": 16, "x": 0, "y": 0},
+      "datasource": {"type": "influxdb", "uid": "InfluxDB-PLC4X"},
+      "targets": [
+        {
+          "datasource": {"type": "influxdb", "uid": "InfluxDB-PLC4X"},
+          "query": "from(bucket: \"plc4x_raw\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"plc4x_ml\")\n  |> filter(fn: (r) => r.analysis == \"anomaly_ensemble\")\n  |> filter(fn: (r) => r.device =~ /^${device}$/)\n  |> filter(fn: (r) => r.alias =~ /^${tag}$/)\n  |> filter(fn: (r) => r._field == \"score\")\n  |> aggregateWindow(every: v.windowPeriod, fn: mean, createEmpty: false)",
+          "refId": "score"
+        },
+        {
+          "datasource": {"type": "influxdb", "uid": "InfluxDB-PLC4X"},
+          "query": "from(bucket: \"plc4x_raw\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"plc4x_ml\")\n  |> filter(fn: (r) => r.analysis == \"anomaly_ensemble\")\n  |> filter(fn: (r) => r.device =~ /^${device}$/)\n  |> filter(fn: (r) => r.alias =~ /^${tag}$/)\n  |> filter(fn: (r) => r._field == \"is_anomaly\")\n  |> filter(fn: (r) => r._value == 1.0)\n  |> aggregateWindow(every: v.windowPeriod, fn: max, createEmpty: false)",
+          "refId": "anomaly_flag"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {"lineWidth": 2, "fillOpacity": 10},
+          "min": 0,
+          "max": 1,
+          "unit": "none"
+        },
+        "overrides": [
+          {
+            "matcher": {"id": "byFrameRefID", "options": "anomaly_flag"},
+            "properties": [
+              {"id": "color", "value": {"fixedColor": "#c8102e", "mode": "fixed"}},
+              {"id": "custom.lineWidth", "value": 0},
+              {"id": "custom.fillOpacity", "value": 80},
+              {"id": "displayName", "value": "Anomaly Flag"}
+            ]
+          },
+          {
+            "matcher": {"id": "byFrameRefID", "options": "score"},
+            "properties": [
+              {"id": "color", "value": {"fixedColor": "#e67e22", "mode": "fixed"}},
+              {"id": "displayName", "value": "Ensemble Score"}
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {"calcs": ["max", "mean"], "displayMode": "table", "placement": "bottom"},
+        "tooltip": {"mode": "multi"}
+      }
+    },
+    {
+      "id": 2,
+      "title": "Anomaly Confidence",
+      "type": "stat",
+      "gridPos": {"h": 4, "w": 8, "x": 16, "y": 0},
+      "datasource": {"type": "influxdb", "uid": "InfluxDB-PLC4X"},
+      "targets": [
+        {
+          "datasource": {"type": "influxdb", "uid": "InfluxDB-PLC4X"},
+          "query": "from(bucket: \"plc4x_raw\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"plc4x_ml\")\n  |> filter(fn: (r) => r.analysis == \"anomaly_ensemble\")\n  |> filter(fn: (r) => r.device =~ /^${device}$/)\n  |> filter(fn: (r) => r.alias =~ /^${tag}$/)\n  |> filter(fn: (r) => r._field == \"confidence\")\n  |> last()",
+          "refId": "confidence"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "green", "value": null},
+              {"color": "yellow", "value": 70},
+              {"color": "red", "value": 90}
+            ]
+          }
+        }
+      },
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background", "graphMode": "none", "textMode": "value_and_name"}
+    },
+    {
+      "id": 3,
+      "title": "Algorithm Agreement (3 = all agree)",
+      "type": "stat",
+      "gridPos": {"h": 5, "w": 8, "x": 16, "y": 4},
+      "datasource": {"type": "influxdb", "uid": "InfluxDB-PLC4X"},
+      "targets": [
+        {
+          "datasource": {"type": "influxdb", "uid": "InfluxDB-PLC4X"},
+          "query": "from(bucket: \"plc4x_raw\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"plc4x_ml\")\n  |> filter(fn: (r) => r.analysis == \"anomaly_ensemble\")\n  |> filter(fn: (r) => r.device =~ /^${device}$/)\n  |> filter(fn: (r) => r.alias =~ /^${tag}$/)\n  |> filter(fn: (r) => r._field == \"agreeing\")\n  |> last()",
+          "refId": "agreeing"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "min": 0,
+          "max": 3,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "green", "value": null},
+              {"color": "yellow", "value": 2},
+              {"color": "red", "value": 3}
+            ]
+          }
+        }
+      },
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background", "graphMode": "none"}
+    },
+    {
+      "id": 4,
+      "title": "SHAP Feature Importance — Top Contributors",
+      "type": "bargauge",
+      "gridPos": {"h": 9, "w": 12, "x": 0, "y": 9},
+      "datasource": {"type": "influxdb", "uid": "InfluxDB-PLC4X"},
+      "targets": [
+        {
+          "datasource": {"type": "influxdb", "uid": "InfluxDB-PLC4X"},
+          "query": "from(bucket: \"plc4x_raw\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"plc4x_ml\")\n  |> filter(fn: (r) => r.analysis == \"shap\")\n  |> filter(fn: (r) => r.device =~ /^${device}$/)\n  |> filter(fn: (r) => r._field == \"shap_value\")\n  |> last()\n  |> group(columns: [\"contributing_tag\"])\n  |> mean()",
+          "refId": "shap"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "color": {"mode": "continuous-RdYlGr"},
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [{"color": "red", "value": null}, {"color": "green", "value": 0}]
+          }
+        }
+      },
+      "options": {
+        "reduceOptions": {"calcs": ["lastNotNull"]},
+        "orientation": "horizontal",
+        "displayMode": "gradient",
+        "showUnfilled": true
+      }
+    },
+    {
+      "id": 5,
+      "title": "Correlation Pairs — Latest",
+      "type": "table",
+      "gridPos": {"h": 9, "w": 12, "x": 12, "y": 9},
+      "datasource": {"type": "influxdb", "uid": "InfluxDB-PLC4X"},
+      "targets": [
+        {
+          "datasource": {"type": "influxdb", "uid": "InfluxDB-PLC4X"},
+          "query": "from(bucket: \"plc4x_raw\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"plc4x_ml\")\n  |> filter(fn: (r) => r.analysis == \"corr_pair\")\n  |> filter(fn: (r) => r.device =~ /^${device}$/)\n  |> filter(fn: (r) => r._field == \"correlation\")\n  |> last()",
+          "refId": "corr_pairs"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {"custom": {"displayMode": "color-background-solid"}},
+        "overrides": [
+          {
+            "matcher": {"id": "byName", "options": "_value"},
+            "properties": [
+              {"id": "displayName", "value": "Correlation"},
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {"color": "red", "value": null},
+                    {"color": "yellow", "value": -0.3},
+                    {"color": "green", "value": 0.3}
+                  ]
+                }
+              },
+              {"id": "custom.displayMode", "value": "color-background-solid"}
+            ]
+          }
+        ]
+      },
+      "options": {"sortBy": [{"desc": true, "displayName": "Correlation"}]}
+    },
+    {
+      "id": 6,
+      "title": "Broken Correlations",
+      "type": "table",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 18},
+      "datasource": {"type": "influxdb", "uid": "InfluxDB-PLC4X"},
+      "targets": [
+        {
+          "datasource": {"type": "influxdb", "uid": "InfluxDB-PLC4X"},
+          "query": "from(bucket: \"plc4x_raw\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"plc4x_ml\")\n  |> filter(fn: (r) => r.analysis == \"corr_broken\")\n  |> filter(fn: (r) => r.device =~ /^${device}$/)\n  |> filter(fn: (r) => r._field == \"delta\")\n  |> sort(columns: [\"_time\"], desc: true)\n  |> limit(n: 50)",
+          "refId": "corr_broken"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": [
+          {
+            "matcher": {"id": "byName", "options": "_value"},
+            "properties": [
+              {"id": "displayName", "value": "Delta"},
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {"color": "green", "value": null},
+                    {"color": "yellow", "value": 0.3},
+                    {"color": "red", "value": 0.5}
+                  ]
+                }
+              },
+              {"id": "custom.displayMode", "value": "color-background-solid"}
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": 7,
+      "title": "Change Points — ${device} / ${tag}",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 18},
+      "datasource": {"type": "influxdb", "uid": "InfluxDB-PLC4X"},
+      "targets": [
+        {
+          "datasource": {"type": "influxdb", "uid": "InfluxDB-PLC4X"},
+          "query": "from(bucket: \"plc4x_raw\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"plc4x_ml\")\n  |> filter(fn: (r) => r.analysis == \"change_point\")\n  |> filter(fn: (r) => r.device =~ /^${device}$/)\n  |> filter(fn: (r) => r.alias =~ /^${tag}$/)\n  |> filter(fn: (r) => r._field == \"severity\")\n  |> aggregateWindow(every: v.windowPeriod, fn: max, createEmpty: false)",
+          "refId": "changepoint_severity"
+        },
+        {
+          "datasource": {"type": "influxdb", "uid": "InfluxDB-PLC4X"},
+          "query": "from(bucket: \"plc4x_raw\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"plc4x_ml\")\n  |> filter(fn: (r) => r.analysis == \"change_point\")\n  |> filter(fn: (r) => r.device =~ /^${device}$/)\n  |> filter(fn: (r) => r.alias =~ /^${tag}$/)\n  |> filter(fn: (r) => r._field == \"mean_after\")\n  |> aggregateWindow(every: v.windowPeriod, fn: last, createEmpty: false)",
+          "refId": "mean_after"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {"custom": {"lineWidth": 2}},
+        "overrides": [
+          {
+            "matcher": {"id": "byFrameRefID", "options": "changepoint_severity"},
+            "properties": [
+              {"id": "color", "value": {"fixedColor": "#2980b9", "mode": "fixed"}},
+              {"id": "displayName", "value": "Severity"}
+            ]
+          },
+          {
+            "matcher": {"id": "byFrameRefID", "options": "mean_after"},
+            "properties": [
+              {"id": "color", "value": {"fixedColor": "#27ae60", "mode": "fixed"}},
+              {"id": "custom.lineStyle", "value": {"fill": "dash"}},
+              {"id": "displayName", "value": "Mean After Change"}
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": 8,
+      "title": "Pattern Discords (Unusual Sequences)",
+      "type": "table",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 26},
+      "datasource": {"type": "influxdb", "uid": "InfluxDB-PLC4X"},
+      "targets": [
+        {
+          "datasource": {"type": "influxdb", "uid": "InfluxDB-PLC4X"},
+          "query": "from(bucket: \"plc4x_raw\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"plc4x_ml\")\n  |> filter(fn: (r) => r.analysis == \"discord\")\n  |> filter(fn: (r) => r.device =~ /^${device}$/)\n  |> filter(fn: (r) => r._field == \"discord_score\")\n  |> sort(columns: [\"_time\"], desc: true)\n  |> limit(n: 50)",
+          "refId": "discords"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": [
+          {
+            "matcher": {"id": "byName", "options": "_value"},
+            "properties": [
+              {"id": "displayName", "value": "Discord Score"},
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {"color": "green", "value": null},
+                    {"color": "yellow", "value": 0.5},
+                    {"color": "red", "value": 0.8}
+                  ]
+                }
+              },
+              {"id": "custom.displayMode", "value": "color-background-solid"}
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": 9,
+      "title": "Pattern Motifs (Recurring Sequences)",
+      "type": "table",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 26},
+      "datasource": {"type": "influxdb", "uid": "InfluxDB-PLC4X"},
+      "targets": [
+        {
+          "datasource": {"type": "influxdb", "uid": "InfluxDB-PLC4X"},
+          "query": "from(bucket: \"plc4x_raw\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"plc4x_ml\")\n  |> filter(fn: (r) => r.analysis == \"motif\")\n  |> filter(fn: (r) => r.device =~ /^${device}$/)\n  |> filter(fn: (r) => r._field == \"similarity\")\n  |> sort(columns: [\"_time\"], desc: true)\n  |> limit(n: 50)",
+          "refId": "motifs"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": [
+          {
+            "matcher": {"id": "byName", "options": "_value"},
+            "properties": [
+              {"id": "displayName", "value": "Similarity %"},
+              {"id": "unit", "value": "percentunit"},
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {"color": "yellow", "value": null},
+                    {"color": "green", "value": 0.8}
+                  ]
+                }
+              },
+              {"id": "custom.displayMode", "value": "color-background-solid"}
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}

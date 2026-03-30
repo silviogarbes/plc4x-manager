@@ -1,0 +1,68 @@
+{
+  "title": "PLC4X Custom Data",
+  "uid": "plc4x-custom-data",
+  "tags": ["plc4x", "custom"],
+  "timezone": "browser",
+  "refresh": "10s",
+  "time": {"from": "now-1h", "to": "now"},
+  "panels": [
+    {
+      "id": 1, "title": "Quality Inspection — Pass Rate", "type": "gauge",
+      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 0},
+      "datasource": {"type": "influxdb", "uid": "InfluxDB-PLC4X"},
+      "targets": [{"datasource": {"type": "influxdb", "uid": "InfluxDB-PLC4X"}, "query": "from(bucket: \"plc4x_raw\")\n  |> range(start: -1h)\n  |> filter(fn: (r) => r._measurement == \"quality_check\")\n  |> filter(fn: (r) => r._field == \"result\")\n  |> mean()\n  |> map(fn: (r) => ({r with _value: r._value * 100.0}))", "refId": "A"}],
+      "fieldConfig": {"defaults": {"unit": "percent", "min": 0, "max": 100, "thresholds": {"steps": [{"color": "red", "value": null}, {"color": "yellow", "value": 80}, {"color": "green", "value": 95}]}}}
+    },
+    {
+      "id": 2, "title": "Vision AI — Defect Rate", "type": "gauge",
+      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 0},
+      "datasource": {"type": "influxdb", "uid": "InfluxDB-PLC4X"},
+      "targets": [{"datasource": {"type": "influxdb", "uid": "InfluxDB-PLC4X"}, "query": "from(bucket: \"plc4x_raw\")\n  |> range(start: -1h)\n  |> filter(fn: (r) => r._measurement == \"vision_ai\")\n  |> filter(fn: (r) => r._field == \"defect_detected\")\n  |> mean()\n  |> map(fn: (r) => ({r with _value: r._value * 100.0}))", "refId": "A"}],
+      "fieldConfig": {"defaults": {"unit": "percent", "min": 0, "max": 100, "thresholds": {"steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 5}, {"color": "red", "value": 10}]}}}
+    },
+    {
+      "id": 3, "title": "Vision AI — Avg Inference Time", "type": "stat",
+      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 0},
+      "datasource": {"type": "influxdb", "uid": "InfluxDB-PLC4X"},
+      "targets": [{"datasource": {"type": "influxdb", "uid": "InfluxDB-PLC4X"}, "query": "from(bucket: \"plc4x_raw\")\n  |> range(start: -1h)\n  |> filter(fn: (r) => r._measurement == \"vision_ai\")\n  |> filter(fn: (r) => r._field == \"inference_ms\")\n  |> mean()", "refId": "A"}],
+      "fieldConfig": {"defaults": {"unit": "ms", "color": {"mode": "thresholds"}, "thresholds": {"steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 100}, {"color": "red", "value": 500}]}}}
+    },
+    {
+      "id": 4, "title": "Quality Results Over Time", "type": "timeseries",
+      "gridPos": {"h": 10, "w": 12, "x": 0, "y": 8},
+      "datasource": {"type": "influxdb", "uid": "InfluxDB-PLC4X"},
+      "targets": [{"datasource": {"type": "influxdb", "uid": "InfluxDB-PLC4X"}, "query": "from(bucket: \"plc4x_raw\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"quality_check\")\n  |> filter(fn: (r) => r._field == \"result\")\n  |> aggregateWindow(every: v.windowPeriod, fn: mean, createEmpty: false)", "refId": "A"}],
+      "fieldConfig": {"defaults": {"custom": {"lineWidth": 2, "fillOpacity": 20, "showPoints": "auto"}, "mappings": [{"type": "range", "options": {"from": 0.5, "to": 1.1, "result": {"color": "green"}}}, {"type": "range", "options": {"from": -0.1, "to": 0.5, "result": {"color": "red"}}}]}}
+    },
+    {
+      "id": 5, "title": "Vision AI — Detections Over Time", "type": "timeseries",
+      "gridPos": {"h": 10, "w": 12, "x": 12, "y": 8},
+      "datasource": {"type": "influxdb", "uid": "InfluxDB-PLC4X"},
+      "targets": [
+        {"datasource": {"type": "influxdb", "uid": "InfluxDB-PLC4X"}, "query": "from(bucket: \"plc4x_raw\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"vision_ai\")\n  |> filter(fn: (r) => r._field == \"confidence\")\n  |> aggregateWindow(every: v.windowPeriod, fn: mean, createEmpty: false)", "refId": "confidence"},
+        {"datasource": {"type": "influxdb", "uid": "InfluxDB-PLC4X"}, "query": "from(bucket: \"plc4x_raw\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"vision_ai\")\n  |> filter(fn: (r) => r._field == \"defect_detected\")\n  |> aggregateWindow(every: v.windowPeriod, fn: mean, createEmpty: false)", "refId": "defects"}
+      ],
+      "fieldConfig": {"defaults": {"custom": {"lineWidth": 2, "fillOpacity": 10}}}
+    },
+    {
+      "id": 6, "title": "Manual Readings — Temperature & Pressure", "type": "timeseries",
+      "gridPos": {"h": 10, "w": 12, "x": 0, "y": 18},
+      "datasource": {"type": "influxdb", "uid": "InfluxDB-PLC4X"},
+      "targets": [{"datasource": {"type": "influxdb", "uid": "InfluxDB-PLC4X"}, "query": "from(bucket: \"plc4x_raw\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"manual_reading\")\n  |> filter(fn: (r) => r._field == \"temperature\" or r._field == \"pressure\")\n  |> aggregateWindow(every: v.windowPeriod, fn: mean, createEmpty: false)", "refId": "A"}],
+      "fieldConfig": {"defaults": {"custom": {"lineWidth": 2, "fillOpacity": 10, "showPoints": "always"}}}
+    },
+    {
+      "id": 7, "title": "Production — Count & Rejects by Line", "type": "timeseries",
+      "gridPos": {"h": 10, "w": 12, "x": 12, "y": 18},
+      "datasource": {"type": "influxdb", "uid": "InfluxDB-PLC4X"},
+      "targets": [{"datasource": {"type": "influxdb", "uid": "InfluxDB-PLC4X"}, "query": "from(bucket: \"plc4x_raw\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"production\")\n  |> aggregateWindow(every: v.windowPeriod, fn: mean, createEmpty: false)", "refId": "A"}],
+      "fieldConfig": {"defaults": {"custom": {"lineWidth": 2, "fillOpacity": 10}}}
+    },
+    {
+      "id": 8, "title": "Latest Custom Data", "type": "table",
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 28},
+      "datasource": {"type": "influxdb", "uid": "InfluxDB-PLC4X"},
+      "targets": [{"datasource": {"type": "influxdb", "uid": "InfluxDB-PLC4X"}, "query": "from(bucket: \"plc4x_raw\")\n  |> range(start: -1h)\n  |> filter(fn: (r) => r._measurement == \"quality_check\" or r._measurement == \"vision_ai\" or r._measurement == \"manual_reading\" or r._measurement == \"production\")\n  |> last()\n  |> group()\n  |> keep(columns: [\"_measurement\", \"_field\", \"_value\", \"_time\"])\n  |> sort(columns: [\"_time\"], desc: true)", "refId": "A"}]
+    }
+  ]
+}

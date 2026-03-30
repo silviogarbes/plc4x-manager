@@ -1,0 +1,16 @@
+---
+version: "0.8"
+dir: "/app/security"
+name: "Plc4xOPCUAServer"
+disableInsecureEndpoint: false
+tcpPort: 12687
+devices:
+  - name: "Simulated"
+    connectionString: "simulated://127.0.0.1"
+    tags:
+      - alias: "RandomInteger"
+        address: "RANDOM/Temporary:DINT"
+      - alias: "RandomFloat"
+        address: "RANDOM/Temporary:REAL"
+      - alias: "StateVariable"
+        address: "STATE/Temporary:DINT"

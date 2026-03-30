@@ -1,0 +1,118 @@
+[
+  {
+    "name": "Demo-Simulated",
+    "plant": "SP-HQ",
+    "connectionString": "simulated://127.0.0.1",
+    "enabled": true,
+    "tags": [
+      {"alias": "RandomInteger", "address": "RANDOM/Temporary:DINT"},
+      {"alias": "RandomFloat", "address": "RANDOM/Temporary:REAL"},
+      {"alias": "RandomBool", "address": "RANDOM/Temporary:BOOL"},
+      {"alias": "RandomString", "address": "RANDOM/Temporary:STRING"},
+      {"alias": "StateInteger", "address": "STATE/Temporary:DINT"},
+      {"alias": "StateFloat", "address": "STATE/Temporary:REAL"}
+    ],
+    "calculatedTags": [
+      {"alias": "IntPlusFloat", "formula": "RandomInteger + RandomFloat"},
+      {"alias": "DoubleInt", "formula": "RandomInteger * 2"},
+      {"alias": "AbsInt", "formula": "abs(RandomInteger)"},
+      {"alias": "TempCelsius", "formula": "RandomFloat / 100"},
+      {"alias": "TempFahrenheit", "formula": "RandomFloat / 100 * 9 / 5 + 32"}
+    ]
+  },
+  {
+    "name": "Demo-Milo-OpcUa",
+    "connectionString": "opcua:tcp://milo.digitalpetri.com:62541/milo",
+    "enabled": false,
+    "tags": [
+      {"alias": "ServerStatus", "address": "ns=0;i=2259"},
+      {"alias": "CurrentTime", "address": "ns=0;i=2258"},
+      {"alias": "ServerArray", "address": "ns=0;i=2254"},
+      {"alias": "NamespaceArray", "address": "ns=0;i=2255"},
+      {"alias": "ServiceLevel", "address": "ns=0;i=2267"}
+    ]
+  },
+  {
+    "name": "Demo-Prosys-OpcUa",
+    "connectionString": "opcua:tcp://uademo.prosysopc.com:53530/OPCUA/SimulationServer",
+    "enabled": false,
+    "tags": [
+      {"alias": "ServerStatus", "address": "ns=0;i=2259"},
+      {"alias": "CurrentTime", "address": "ns=0;i=2258"},
+      {"alias": "Counter", "address": "ns=3;i=1001"},
+      {"alias": "Random", "address": "ns=3;i=1002"},
+      {"alias": "Sinusoid", "address": "ns=3;i=1003"},
+      {"alias": "Triangle", "address": "ns=3;i=1006"}
+    ]
+  },
+  {
+    "name": "Demo-S7-Template",
+    "connectionString": "s7://192.168.1.10",
+    "enabled": false,
+    "tags": [
+      {"alias": "Temperature", "address": "%DB1:0:REAL"},
+      {"alias": "Pressure", "address": "%DB1:4:REAL"},
+      {"alias": "Speed", "address": "%DB1:8:INT"},
+      {"alias": "MotorRunning", "address": "%DB1:10.0:BOOL"},
+      {"alias": "Counter", "address": "%DB1:12:DINT"},
+      {"alias": "SetPoint", "address": "%DB1:16:REAL"}
+    ],
+    "calculatedTags": [
+      {"alias": "TempFahrenheit", "formula": "Temperature * 9 / 5 + 32"},
+      {"alias": "PressurePSI", "formula": "Pressure * 14.5038"},
+      {"alias": "SpeedPercent", "formula": "Speed / 1500 * 100"},
+      {"alias": "Deviation", "formula": "abs(Temperature - SetPoint)"}
+    ]
+  },
+  {
+    "name": "Demo-Modbus-Template",
+    "connectionString": "modbus-tcp://192.168.1.20:502",
+    "enabled": false,
+    "tags": [
+      {"alias": "Voltage_L1", "address": "holding-register:1"},
+      {"alias": "Voltage_L2", "address": "holding-register:2"},
+      {"alias": "Voltage_L3", "address": "holding-register:3"},
+      {"alias": "Current_L1", "address": "holding-register:4"},
+      {"alias": "Current_L2", "address": "holding-register:5"},
+      {"alias": "Current_L3", "address": "holding-register:6"},
+      {"alias": "ActivePower", "address": "holding-register:7"},
+      {"alias": "ReactivePower", "address": "holding-register:8"},
+      {"alias": "PowerFactor", "address": "holding-register:9"},
+      {"alias": "Frequency", "address": "holding-register:10"}
+    ],
+    "calculatedTags": [
+      {"alias": "VoltageAvg", "formula": "avg(Voltage_L1, Voltage_L2, Voltage_L3)"},
+      {"alias": "CurrentAvg", "formula": "avg(Current_L1, Current_L2, Current_L3)"},
+      {"alias": "ApparentPower", "formula": "sqrt(ActivePower**2 + ReactivePower**2)"},
+      {"alias": "CurrentTotal", "formula": "sum(Current_L1, Current_L2, Current_L3)"}
+    ]
+  },
+  {
+    "name": "Demo-ControlLogix",
+    "connectionString": "logix://192.168.1.50",
+    "enabled": false,
+    "tags": [
+      {"alias": "Temperature", "address": "Temperature"},
+      {"alias": "Pressure", "address": "Pressure"},
+      {"alias": "MotorSpeed", "address": "MotorSpeed"},
+      {"alias": "RunStatus", "address": "Program:MainProgram.RunStatus"},
+      {"alias": "Counter", "address": "Counter"},
+      {"alias": "SetPoint", "address": "SetPoint"}
+    ],
+    "calculatedTags": [
+      {"alias": "TempFahrenheit", "formula": "Temperature * 9 / 5 + 32"},
+      {"alias": "SpeedPercent", "formula": "MotorSpeed / 1750 * 100"}
+    ]
+  },
+  {
+    "name": "Demo-EtherNetIP",
+    "connectionString": "eip://192.168.1.40",
+    "enabled": false,
+    "tags": [
+      {"alias": "Tag1", "address": "%Tag1:DINT"},
+      {"alias": "Tag2", "address": "%Tag2:REAL"},
+      {"alias": "Tag3", "address": "%Tag3:BOOL"},
+      {"alias": "ArrayTag", "address": "%ArrayTag[0]:DINT"}
+    ]
+  }
+]

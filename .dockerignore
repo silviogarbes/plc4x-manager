@@ -1,0 +1,9 @@
+README.md
+LICENSE
+NOTICE
+.git
+.gitignore
+.idea
+.vscode
+__pycache__
+*.pyc

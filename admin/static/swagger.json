@@ -1,0 +1,473 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "PLC4X Manager API",
+    "description": "REST API for managing Apache PLC4X OPC-UA Server. Configure devices, read/write PLC tags, manage users, certificates, backups, and server lifecycle.",
+    "version": "1.0.0",
+    "contact": {
+      "name": "Silvio Garbes",
+      "url": "https://github.com/silviogarbes/plc4x-manager"
+    },
+    "license": {
+      "name": "Apache 2.0",
+      "url": "https://www.apache.org/licenses/LICENSE-2.0"
+    }
+  },
+  "servers": [
+    {"url": "http://localhost:8080", "description": "Local (HTTP)"},
+    {"url": "https://localhost:8443", "description": "Local (HTTPS)"}
+  ],
+  "components": {
+    "securitySchemes": {
+      "BearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT",
+        "description": "JWT token obtained from POST /api/auth/login"
+      },
+      "ApiKeyAuth": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "X-API-Key",
+        "description": "API key for machine-to-machine access (set API_KEY in .env)"
+      }
+    },
+    "schemas": {
+      "Device": {
+        "type": "object",
+        "required": ["name", "connectionString"],
+        "properties": {
+          "name": {"type": "string", "example": "ControlLogix1"},
+          "connectionString": {"type": "string", "example": "logix://192.168.1.50"},
+          "enabled": {"type": "boolean", "default": true},
+          "tags": {"type": "array", "items": {"$ref": "#/components/schemas/Tag"}},
+          "calculatedTags": {"type": "array", "items": {"$ref": "#/components/schemas/CalculatedTag"}}
+        }
+      },
+      "Tag": {
+        "type": "object",
+        "required": ["alias", "address"],
+        "properties": {
+          "alias": {"type": "string", "example": "Temperature"},
+          "address": {"type": "string", "example": "%DB1:0:REAL"}
+        }
+      },
+      "CalculatedTag": {
+        "type": "object",
+        "required": ["alias", "formula"],
+        "properties": {
+          "alias": {"type": "string", "example": "TempFahrenheit"},
+          "formula": {"type": "string", "example": "Temperature * 9 / 5 + 32"}
+        }
+      },
+      "LiveTag": {
+        "type": "object",
+        "properties": {
+          "alias": {"type": "string"},
+          "address": {"type": "string"},
+          "value": {},
+          "status": {"type": "string", "enum": ["ok", "read_error", "disabled"]},
+          "timestamp": {"type": "string", "nullable": true}
+        }
+      },
+      "LiveDevice": {
+        "type": "object",
+        "properties": {
+          "name": {"type": "string"},
+          "connectionString": {"type": "string"},
+          "status": {"type": "string", "enum": ["online", "error", "disabled", "no_tags"]},
+          "enabled": {"type": "boolean"},
+          "tags": {"type": "array", "items": {"$ref": "#/components/schemas/LiveTag"}}
+        }
+      },
+      "Error": {
+        "type": "object",
+        "properties": {
+          "error": {"type": "string"}
+        }
+      }
+    }
+  },
+  "security": [{"BearerAuth": []}, {"ApiKeyAuth": []}],
+  "tags": [
+    {"name": "Authentication", "description": "Login and JWT token management"},
+    {"name": "Configuration", "description": "Full config and server settings"},
+    {"name": "Devices", "description": "PLC device management"},
+    {"name": "Tags", "description": "PLC tag management per device"},
+    {"name": "Live Data", "description": "Real-time tag read/write via OPC-UA"},
+    {"name": "Server Control", "description": "PLC4X server lifecycle"},
+    {"name": "PLC4X Version", "description": "Jar version update and rollback"},
+    {"name": "Users", "description": "OPC-UA user management"},
+    {"name": "Security", "description": "Certificates and keystore"},
+    {"name": "Backups", "description": "Configuration backup and restore"},
+    {"name": "Templates", "description": "Protocol connection templates"}
+  ],
+  "paths": {
+    "/api/auth/login": {
+      "post": {
+        "tags": ["Authentication"],
+        "summary": "Login and get JWT token",
+        "security": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["username", "password"],
+                "properties": {
+                  "username": {"type": "string", "example": "admin"},
+                  "password": {"type": "string", "example": "admin"}
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {"description": "Login successful", "content": {"application/json": {"schema": {"type": "object", "properties": {"token": {"type": "string"}, "username": {"type": "string"}, "expiresIn": {"type": "integer"}}}}}},
+          "401": {"description": "Invalid credentials"},
+          "429": {"description": "Account locked (brute-force protection)"}
+        }
+      }
+    },
+    "/api/config": {
+      "get": {
+        "tags": ["Configuration"],
+        "summary": "Get full configuration",
+        "responses": {"200": {"description": "Full config as JSON"}}
+      },
+      "put": {
+        "tags": ["Configuration"],
+        "summary": "Save full configuration (replaces ALL config)",
+        "description": "WARNING: This replaces the entire configuration including all devices. Use GET first, modify, then PUT back.",
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"type": "object"}}}},
+        "responses": {"200": {"description": "Config saved"}, "400": {"description": "Invalid config"}}
+      }
+    },
+    "/api/config/server": {
+      "put": {
+        "tags": ["Configuration"],
+        "summary": "Update server settings only",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "name": {"type": "string", "example": "Plc4xOPCUAServer"},
+                  "tcpPort": {"type": "integer", "example": 12687},
+                  "disableInsecureEndpoint": {"type": "boolean"}
+                }
+              }
+            }
+          }
+        },
+        "responses": {"200": {"description": "Server config updated"}}
+      }
+    },
+    "/api/devices": {
+      "get": {
+        "tags": ["Devices"],
+        "summary": "List all devices",
+        "responses": {"200": {"description": "Array of devices", "content": {"application/json": {"schema": {"type": "array", "items": {"$ref": "#/components/schemas/Device"}}}}}}
+      },
+      "post": {
+        "tags": ["Devices"],
+        "summary": "Add a device",
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Device"}}}},
+        "responses": {"201": {"description": "Device added"}, "400": {"description": "Invalid input or tag address"}, "409": {"description": "Device already exists"}}
+      }
+    },
+    "/api/devices/{name}": {
+      "put": {
+        "tags": ["Devices"],
+        "summary": "Update a device",
+        "parameters": [{"name": "name", "in": "path", "required": true, "schema": {"type": "string"}}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Device"}}}},
+        "responses": {"200": {"description": "Device updated"}, "400": {"description": "Invalid tag address"}, "404": {"description": "Device not found"}}
+      },
+      "delete": {
+        "tags": ["Devices"],
+        "summary": "Delete a device",
+        "parameters": [{"name": "name", "in": "path", "required": true, "schema": {"type": "string"}}],
+        "responses": {"200": {"description": "Device removed"}, "404": {"description": "Device not found"}}
+      }
+    },
+    "/api/devices/{name}/tags": {
+      "get": {
+        "tags": ["Tags"],
+        "summary": "List tags for a device",
+        "parameters": [{"name": "name", "in": "path", "required": true, "schema": {"type": "string"}}],
+        "responses": {"200": {"description": "Array of tags"}, "404": {"description": "Device not found"}}
+      },
+      "post": {
+        "tags": ["Tags"],
+        "summary": "Add a tag to a device",
+        "parameters": [{"name": "name", "in": "path", "required": true, "schema": {"type": "string"}}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Tag"}}}},
+        "responses": {"201": {"description": "Tag added"}, "400": {"description": "Invalid address (e.g., Modbus address must be >= 1)"}, "404": {"description": "Device not found"}, "409": {"description": "Tag already exists"}}
+      }
+    },
+    "/api/devices/{name}/tags/{alias}": {
+      "delete": {
+        "tags": ["Tags"],
+        "summary": "Delete a tag",
+        "parameters": [
+          {"name": "name", "in": "path", "required": true, "schema": {"type": "string"}},
+          {"name": "alias", "in": "path", "required": true, "schema": {"type": "string"}}
+        ],
+        "responses": {"200": {"description": "Tag removed"}, "404": {"description": "Tag or device not found"}}
+      }
+    },
+    "/api/live/read": {
+      "get": {
+        "tags": ["Live Data"],
+        "summary": "Read all live tag values",
+        "parameters": [{"name": "device", "in": "query", "required": false, "schema": {"type": "string"}, "description": "Filter by device name"}],
+        "responses": {"200": {"description": "Live data for all (or filtered) devices", "content": {"application/json": {"schema": {"type": "object", "properties": {"server": {"type": "string"}, "devices": {"type": "array", "items": {"$ref": "#/components/schemas/LiveDevice"}}, "error": {"type": "string", "nullable": true}}}}}}}
+      }
+    },
+    "/api/live/read/{device}": {
+      "get": {
+        "tags": ["Live Data"],
+        "summary": "Read tags for a specific device",
+        "description": "Much faster than reading all devices. Returns only the specified device's tags.",
+        "parameters": [{"name": "device", "in": "path", "required": true, "schema": {"type": "string"}, "description": "Device name"}],
+        "responses": {"200": {"description": "Live data for the device"}}
+      }
+    },
+    "/api/live/write": {
+      "post": {
+        "tags": ["Live Data"],
+        "summary": "Write a value to a PLC tag",
+        "description": "Writes a value to a PLC tag via OPC-UA. Value type is auto-cast to match the tag's data type. Simulated devices are read-only.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["device", "tag", "value"],
+                "properties": {
+                  "device": {"type": "string", "example": "ModbusMeter"},
+                  "tag": {"type": "string", "example": "SetPoint"},
+                  "value": {"example": 75.5}
+                }
+              }
+            }
+          }
+        },
+        "responses": {"200": {"description": "Value written"}, "400": {"description": "Write rejected or device disabled"}, "404": {"description": "Device or tag not found"}, "504": {"description": "Connection timeout"}}
+      }
+    },
+    "/api/server/status": {
+      "get": {
+        "tags": ["Server Control"],
+        "summary": "Get server status",
+        "responses": {"200": {"description": "Server container status", "content": {"application/json": {"schema": {"type": "object", "properties": {"status": {"type": "string"}, "running": {"type": "boolean"}, "id": {"type": "string"}, "image": {"type": "string"}}}}}}}
+      }
+    },
+    "/api/server/restart": {
+      "post": {
+        "tags": ["Server Control"],
+        "summary": "Restart PLC4X server",
+        "responses": {"200": {"description": "Server restarted"}, "404": {"description": "Container not found"}}
+      }
+    },
+    "/api/server/logs": {
+      "get": {
+        "tags": ["Server Control"],
+        "summary": "Get server logs",
+        "parameters": [{"name": "lines", "in": "query", "schema": {"type": "integer", "default": 50}, "description": "Number of log lines"}],
+        "responses": {"200": {"description": "Log text"}}
+      }
+    },
+    "/api/plc4x/version": {
+      "get": {
+        "tags": ["PLC4X Version"],
+        "summary": "Current and backup version",
+        "responses": {"200": {"description": "Version info", "content": {"application/json": {"schema": {"type": "object", "properties": {"currentVersion": {"type": "string"}, "backupVersion": {"type": "string", "nullable": true}, "container": {"type": "string"}}}}}}}
+      }
+    },
+    "/api/plc4x/latest-version": {
+      "get": {
+        "tags": ["PLC4X Version"],
+        "summary": "Check latest version on Maven Central",
+        "responses": {"200": {"description": "Latest version and list"}}
+      }
+    },
+    "/api/plc4x/update": {
+      "post": {
+        "tags": ["PLC4X Version"],
+        "summary": "Update PLC4X jar",
+        "description": "Downloads a new jar from Maven Central. Current jar is backed up for rollback.",
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"type": "object", "required": ["version"], "properties": {"version": {"type": "string", "example": "0.13.0"}}}}}},
+        "responses": {"200": {"description": "Updated"}, "400": {"description": "Invalid format"}, "404": {"description": "Version not found on Maven"}}
+      }
+    },
+    "/api/plc4x/rollback": {
+      "post": {
+        "tags": ["PLC4X Version"],
+        "summary": "Rollback to previous version",
+        "responses": {"200": {"description": "Rolled back"}, "404": {"description": "No backup found"}}
+      }
+    },
+    "/api/users": {
+      "get": {
+        "tags": ["Users"],
+        "summary": "List OPC-UA users",
+        "responses": {"200": {"description": "Array of users"}}
+      },
+      "post": {
+        "tags": ["Users"],
+        "summary": "Add an OPC-UA user",
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"type": "object", "required": ["username", "password"], "properties": {"username": {"type": "string"}, "password": {"type": "string"}, "security": {"type": "string", "default": "admin-group", "enum": ["admin-group", "user-group"]}}}}}},
+        "responses": {"201": {"description": "User added"}, "409": {"description": "User exists"}}
+      }
+    },
+    "/api/users/{username}": {
+      "put": {
+        "tags": ["Users"],
+        "summary": "Update user",
+        "parameters": [{"name": "username", "in": "path", "required": true, "schema": {"type": "string"}}],
+        "requestBody": {"content": {"application/json": {"schema": {"type": "object", "properties": {"password": {"type": "string"}, "security": {"type": "string"}}}}}},
+        "responses": {"200": {"description": "Updated"}, "404": {"description": "Not found"}}
+      },
+      "delete": {
+        "tags": ["Users"],
+        "summary": "Delete user",
+        "parameters": [{"name": "username", "in": "path", "required": true, "schema": {"type": "string"}}],
+        "responses": {"200": {"description": "Removed"}, "404": {"description": "Not found"}}
+      }
+    },
+    "/api/security/status": {
+      "get": {
+        "tags": ["Security"],
+        "summary": "Security initialization status",
+        "responses": {"200": {"description": "Security status"}}
+      }
+    },
+    "/api/security/password": {
+      "put": {
+        "tags": ["Security"],
+        "summary": "Change keystore password",
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"type": "object", "required": ["password"], "properties": {"password": {"type": "string"}}}}}},
+        "responses": {"200": {"description": "Password updated"}}
+      }
+    },
+    "/api/security/certificates/trusted": {
+      "get": {"tags": ["Security"], "summary": "List trusted certificates", "responses": {"200": {"description": "Array of certificates"}}}
+    },
+    "/api/security/certificates/rejected": {
+      "get": {"tags": ["Security"], "summary": "List rejected certificates", "responses": {"200": {"description": "Array of certificates"}}}
+    },
+    "/api/security/certificates/trust/{file}": {
+      "post": {
+        "tags": ["Security"],
+        "summary": "Trust a certificate",
+        "parameters": [{"name": "file", "in": "path", "required": true, "schema": {"type": "string"}}],
+        "responses": {"200": {"description": "Moved to trusted"}, "404": {"description": "Not found"}}
+      }
+    },
+    "/api/security/certificates/reject/{file}": {
+      "post": {
+        "tags": ["Security"],
+        "summary": "Reject a certificate",
+        "parameters": [{"name": "file", "in": "path", "required": true, "schema": {"type": "string"}}],
+        "responses": {"200": {"description": "Moved to rejected"}, "404": {"description": "Not found"}}
+      }
+    },
+    "/api/security/certificates/{file}": {
+      "delete": {
+        "tags": ["Security"],
+        "summary": "Delete a certificate",
+        "parameters": [{"name": "file", "in": "path", "required": true, "schema": {"type": "string"}}],
+        "responses": {"200": {"description": "Deleted"}, "404": {"description": "Not found"}}
+      }
+    },
+    "/api/backups": {
+      "get": {"tags": ["Backups"], "summary": "List configuration backups", "responses": {"200": {"description": "Array of backup files"}}}
+    },
+    "/api/backups/create": {
+      "post": {"tags": ["Backups"], "summary": "Create a manual backup", "responses": {"200": {"description": "Backup created"}}}
+    },
+    "/api/backups/cleanup": {
+      "post": {"tags": ["Backups"], "summary": "Cleanup old backups (keep last 50)", "responses": {"200": {"description": "Cleanup result"}}}
+    },
+    "/api/backups/upload": {
+      "post": {
+        "tags": ["Backups"],
+        "summary": "Restore from uploaded YAML file",
+        "requestBody": {"required": true, "content": {"multipart/form-data": {"schema": {"type": "object", "properties": {"file": {"type": "string", "format": "binary"}}}}}},
+        "responses": {"200": {"description": "Restored"}, "400": {"description": "Invalid file"}}
+      }
+    },
+    "/api/backups/{filename}/restore": {
+      "post": {
+        "tags": ["Backups"],
+        "summary": "Restore a backup",
+        "parameters": [{"name": "filename", "in": "path", "required": true, "schema": {"type": "string"}}],
+        "responses": {"200": {"description": "Restored"}, "404": {"description": "Not found"}}
+      }
+    },
+    "/api/backups/{filename}/download": {
+      "get": {
+        "tags": ["Backups"],
+        "summary": "Download a backup file",
+        "parameters": [
+          {"name": "filename", "in": "path", "required": true, "schema": {"type": "string"}},
+          {"name": "token", "in": "query", "required": true, "schema": {"type": "string"}, "description": "JWT token for auth"}
+        ],
+        "responses": {"200": {"description": "YAML file download"}}
+      }
+    },
+    "/api/backups/{filename}/diff": {
+      "get": {
+        "tags": ["Backups"],
+        "summary": "View diff against current config",
+        "parameters": [{"name": "filename", "in": "path", "required": true, "schema": {"type": "string"}}],
+        "responses": {"200": {"description": "Unified diff"}}
+      }
+    },
+    "/api/templates": {
+      "get": {"tags": ["Templates"], "summary": "Get connection templates for all protocols", "responses": {"200": {"description": "Array of protocol templates with tag examples"}}}
+    },
+    "/api/data/write": {
+      "post": {
+        "tags": ["Data Ingestion"],
+        "summary": "Write custom data points to InfluxDB",
+        "description": "Ingest data from any source: manual inputs, vision AI, quality checks, external sensors. Data appears in Grafana alongside PLC data. Supports single or batch writes.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "oneOf": [
+                  {
+                    "type": "object",
+                    "required": ["measurement", "fields"],
+                    "properties": {
+                      "measurement": {"type": "string", "example": "quality_check"},
+                      "tags": {"type": "object", "example": {"line": "Line1", "product": "BoxA"}},
+                      "fields": {"type": "object", "example": {"result": 1, "score": 0.95}},
+                      "timestamp": {"type": "string", "example": "2026-03-28T20:00:00Z"}
+                    }
+                  },
+                  {
+                    "type": "array",
+                    "items": {"type": "object"}
+                  }
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {"description": "Data written successfully"},
+          "400": {"description": "Invalid payload"},
+          "500": {"description": "Write failed"}
+        }
+      }
+    }
+  }
+}

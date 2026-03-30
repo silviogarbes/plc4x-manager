@@ -1,0 +1,238 @@
+/* HMI Styles — PLC4X Manager */
+
+/* ─── Breadcrumb Navigation ──────────────────────────────────────────────── */
+.hmi-breadcrumb {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.85rem;
+}
+
+.hmi-breadcrumb a {
+  color: var(--primary);
+  text-decoration: none;
+}
+
+.hmi-breadcrumb a:hover {
+  text-decoration: underline;
+}
+
+.hmi-breadcrumb span.separator {
+  color: var(--text-muted);
+}
+
+/* ─── Navigation Grid ────────────────────────────────────────────────────── */
+.hmi-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 16px;
+}
+
+.hmi-nav-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px;
+  cursor: pointer;
+  transition: border-color var(--transition), box-shadow var(--transition);
+}
+
+.hmi-nav-card h4 {
+  font-size: 0.95rem;
+  margin: 0 0 6px 0;
+}
+
+.hmi-nav-card .meta {
+  font-size: 0.78rem;
+  color: var(--text-muted);
+}
+
+.hmi-nav-card .status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  display: inline-block;
+  margin-right: 6px;
+}
+
+.hmi-nav-card .status-dot.online {
+  background: var(--success);
+}
+
+.hmi-nav-card .status-dot.error {
+  background: var(--danger);
+}
+
+.hmi-nav-card .status-dot.offline {
+  background: var(--text-muted);
+}
+
+.hmi-nav-card:hover {
+  border-color: var(--border-active);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+}
+
+.hmi-nav-card .actions {
+  float: right;
+  display: flex;
+  gap: 4px;
+}
+
+/* ─── Canvas Area ────────────────────────────────────────────────────────── */
+.hmi-canvas-wrapper {
+  display: flex;
+  gap: 16px;
+}
+
+.hmi-canvas-container {
+  flex: 1;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  background: #1a1a2e;
+  min-height: 500px;
+  position: relative;
+}
+
+.hmi-canvas-container.edit-mode {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px rgba(200, 16, 46, 0.2);
+}
+
+/* ─── Toolbar ────────────────────────────────────────────────────────────── */
+.hmi-toolbar {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding: 10px 0;
+  flex-wrap: wrap;
+}
+
+.hmi-toolbar-group {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+}
+
+.hmi-toolbar-group-label {
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+  margin-right: 4px;
+}
+
+.hmi-toolbar-separator {
+  width: 1px;
+  height: 24px;
+  background: var(--border);
+}
+
+.hmi-add-btn {
+  padding: 4px 10px;
+  font-size: 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-card);
+  cursor: pointer;
+  transition: background var(--transition), border-color var(--transition);
+}
+
+.hmi-add-btn:hover {
+  background: var(--bg);
+  border-color: var(--border-active);
+}
+
+/* ─── Properties Panel ───────────────────────────────────────────────────── */
+.hmi-properties {
+  width: 300px;
+  flex-shrink: 0;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px;
+  max-height: 70vh;
+  overflow-y: auto;
+}
+
+.hmi-properties h4 {
+  font-size: 0.9rem;
+  margin: 0 0 12px 0;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 8px;
+}
+
+.hmi-properties .form-group {
+  margin-bottom: 10px;
+}
+
+.hmi-properties label {
+  font-size: 0.75rem;
+  font-weight: 600;
+  display: block;
+  margin-bottom: 3px;
+  color: var(--text-secondary);
+}
+
+.hmi-properties input,
+.hmi-properties select {
+  width: 100%;
+  padding: 5px 8px;
+  font-size: 0.82rem;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  box-sizing: border-box;
+}
+
+.hmi-properties .btn-delete {
+  width: 100%;
+  margin-top: 12px;
+  background: var(--danger);
+  color: #fff;
+}
+
+/* ─── Fullscreen ─────────────────────────────────────────────────────────── */
+.hmi-fullscreen {
+  position: fixed;
+  inset: 0;
+  z-index: 500;
+  background: #000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.hmi-fullscreen .hmi-canvas-container {
+  border: none;
+  border-radius: 0;
+  width: 100vw;
+  height: 100vh;
+}
+
+.hmi-fullscreen-exit {
+  position: fixed;
+  top: 10px;
+  right: 10px;
+  z-index: 501;
+  background: rgba(0, 0, 0, 0.6);
+  color: #fff;
+  border: none;
+  border-radius: 4px;
+  padding: 6px 12px;
+  cursor: pointer;
+  font-size: 12px;
+  transition: background var(--transition);
+}
+
+.hmi-fullscreen-exit:hover {
+  background: rgba(0, 0, 0, 0.8);
+}
+
+/* ─── Screen List ────────────────────────────────────────────────────────── */
+.hmi-screen-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+}

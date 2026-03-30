@@ -1,0 +1,1299 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PLC4X Manager</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@300;400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/css/style.css">
+    <link rel="stylesheet" href="/static/css/hmi.css">
+</head>
+<body>
+
+<!-- Header -->
+<div class="header">
+    <div class="header-left">
+        <h1><span style="color:var(--primary);font-weight:700">PLC4X</span> Manager</h1>
+        <nav class="header-tabs">
+            <button class="tab active" onclick="showTab('dashboard',event)">Dashboard</button>
+            <button class="tab" onclick="showTab('live',event)">Live Data</button>
+            <button class="tab" onclick="showTab('devices',event)">Devices</button>
+            <button class="tab" onclick="showTab('server',event)">OPC-UA Server</button>
+            <button class="tab" onclick="showTab('security',event)">Security</button>
+            <button class="tab" onclick="showTab('logs',event)">Logs</button>
+            <button class="tab" onclick="showTab('backups',event)">Backups</button>
+            <button class="tab" onclick="showTab('hmi',event)">HMI</button>
+            <button class="tab" onclick="showTab('alarms',event)" id="alarmsTabBtn">Alarms</button>
+            <button class="tab" onclick="showTab('oee',event)">OEE</button>
+            <button class="tab" onclick="showTab('reports',event)">Reports</button>
+            <button class="tab" onclick="showTab('audit',event)">Audit</button>
+            <button class="tab" onclick="showTab('logbook',event)">Logbook</button>
+            <button class="tab" onclick="showTab('analytics',event)">Analytics</button>
+            <button class="tab" onclick="showTab('ml',event)">AI / ML</button>
+            <button class="tab" onclick="showTab('apidocs',event)">API</button>
+        </nav>
+    </div>
+    <div class="header-status">
+        <span class="status-dot unknown" id="statusDot"></span>
+        <span id="statusText">Checking...</span>
+        <button class="header-btn" onclick="restartServer()">Restart</button>
+        <div class="header-user" id="headerUser"></div>
+    </div>
+</div>
+
+<div class="container">
+
+    <!-- Tab: Dashboard -->
+    <div id="tab-dashboard" class="tab-content">
+        <div class="card">
+            <div class="card-header">
+                <h2>Dashboard</h2>
+                <span class="auto-refresh-indicator">
+                    <span class="pulse-dot"></span>
+                    Auto-refresh 10s
+                </span>
+            </div>
+            <div class="card-body" id="dashboardContent">
+                <p class="text-muted">Loading...</p>
+            </div>
+        </div>
+        <div class="card">
+            <div class="card-header">
+                <h2>Services</h2>
+                <button class="btn btn-outline btn-sm" onclick="loadServiceStatus()">Refresh</button>
+            </div>
+            <div class="card-body" id="servicesContent">
+                <p class="text-muted">Loading...</p>
+            </div>
+        </div>
+        <div class="card">
+            <div class="card-header">
+                <h2>Getting Started</h2>
+            </div>
+            <div class="card-body" style="font-size:0.88rem;line-height:1.7">
+                <table class="table" style="margin-bottom:16px;font-size:0.85rem">
+                    <thead><tr><th>Role</th><th>Username</th><th>Password</th><th>Permissions</th></tr></thead>
+                    <tbody>
+                        <tr><td><span class="status-badge badge-error">admin</span></td><td><code>admin</code></td><td><code>admin</code></td><td>Full access: configure devices, tags, HMI, alarms, server, users</td></tr>
+                        <tr><td><span class="status-badge badge-warn">operator</span></td><td><code>operator</code></td><td><code>operator</code></td><td>View all + write to PLC tags (valves, setpoints) + logbook + acknowledge alarms</td></tr>
+                        <tr><td><span class="status-badge badge-ok">monitor</span></td><td><code>monitor</code></td><td><code>monitor</code></td><td>View only + acknowledge alarms + shift logbook (no PLC writes)</td></tr>
+                    </tbody>
+                </table>
+                <details style="margin-bottom:12px">
+                    <summary style="cursor:pointer;font-size:0.82rem;font-weight:600;color:var(--primary)">Restrict users to specific plants (USERS_JSON)</summary>
+                    <div style="margin-top:8px;padding:12px;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-sm);font-size:0.8rem">
+                        <p style="margin:0 0 8px">Operators can be restricted to see only their plant's data. Set the <code>USERS_JSON</code> environment variable in <code>.env</code> or <code>docker-compose.yml</code>:</p>
+                        <pre style="background:#1b1f24;color:#c9d1d9;padding:8px 10px;border-radius:4px;font-size:0.72rem;overflow-x:auto;margin:4px 0">USERS_JSON={"admin":{"password":"strongPass","role":"admin"},"op-sp":{"password":"1234","role":"operator","plants":["SP-Factory"]},"op-rj":{"password":"5678","role":"operator","plants":["RJ-Plant"]},"monitor":{"password":"monitor","role":"monitor"}}</pre>
+                        <table class="table" style="margin-top:8px;font-size:0.78rem">
+                            <thead><tr><th>User</th><th>Role</th><th>Plants</th><th>Result</th></tr></thead>
+                            <tbody>
+                                <tr><td><code>admin</code></td><td>admin</td><td>(all)</td><td>Sees and configures everything</td></tr>
+                                <tr><td><code>op-sp</code></td><td>operator</td><td>SP-Factory</td><td>Only sees devices in SP-Factory, can write to PLC</td></tr>
+                                <tr><td><code>op-rj</code></td><td>operator</td><td>RJ-Plant</td><td>Only sees devices in RJ-Plant, can write to PLC</td></tr>
+                                <tr><td><code>monitor</code></td><td>monitor</td><td>(all)</td><td>Sees all plants, read-only + alarms + logbook</td></tr>
+                            </tbody>
+                        </table>
+                        <p style="margin:8px 0 0;color:var(--text-secondary)">The <code>plants</code> field is optional. Users without it see all plants. The plant name must match the <strong>Plant / Site</strong> field configured in each device.</p>
+                    </div>
+                </details>
+                <ol style="margin:0;padding-left:1.2rem">
+                    <li><strong>Add devices:</strong> Go to <strong>Devices</strong> tab and click <strong>+ Add Device</strong>, or click <strong>Load Demo Devices</strong> for examples</li>
+                    <li><strong>Restart the server:</strong> Click <strong>Restart</strong> in the top right after adding/removing devices</li>
+                    <li><strong>Monitor live data:</strong> Go to <strong>Live Data</strong> tab to see real-time tag values</li>
+                    <li><strong>View dashboards:</strong> Open <a href="//:3000" id="gettingStartedGrafana" target="_blank">Grafana</a> for time-series graphs, trends, and AI predictions</li>
+                    <li><strong>Monitoring room TV:</strong> Open Grafana with <code>?kiosk</code> for full screen, or use the <strong>Monitoring Room</strong> playlist to auto-rotate dashboards every 30s</li>
+                    <li><strong>Connect OPC-UA clients:</strong> Point your SCADA/HMI to <code>opc.tcp://&lt;this-server&gt;:12687/plc4x</code></li>
+                    <li><strong>Integrate via MQTT:</strong> Subscribe to <code>plc4x/#</code> on port <strong>1883</strong> for real-time tag values</li>
+                    <li><strong>Use the API:</strong> Go to the <strong>API</strong> tab for Swagger documentation with "Try it out"</li>
+                    <li><strong>Custom data:</strong> Send data from any source (manual inputs, vision AI, old equipment) via <code>POST /api/data/write</code> — see examples below</li>
+                    <li><strong>Create HMI screens:</strong> Go to <strong>HMI</strong> tab, click <strong>Load Demo</strong> for examples, or create a plant/area/equipment hierarchy and drag elements onto the canvas. Use <strong>Fullscreen</strong> for TV monitors or add <code>?hmi=equip-id</code> to the URL.</li>
+                </ol>
+                <details style="margin-top:12px">
+                    <summary style="cursor:pointer;font-size:0.82rem;font-weight:600;color:var(--primary)">Data Ingestion Examples (POST /api/data/write)</summary>
+                    <div style="margin-top:8px;padding:12px;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-sm);font-size:0.78rem">
+                        <p style="margin:0 0 8px;color:var(--text-secondary)">Send any data to InfluxDB via the REST API. It appears in Grafana alongside PLC data. Supports single or batch writes.</p>
+                        <div style="margin-bottom:10px">
+                            <strong>Quality Inspection (manual):</strong>
+                            <pre style="background:#1b1f24;color:#c9d1d9;padding:8px 10px;border-radius:4px;font-size:0.72rem;overflow-x:auto;margin:4px 0">curl -X POST http://&lt;host&gt;:8080/api/data/write \
+  -H "Authorization: Bearer &lt;token&gt;" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "measurement": "quality_check",
+    "tags": {"line": "Line1", "product": "BoxA", "inspector": "operator1"},
+    "fields": {"result": 1, "score": 0.95}
+  }'</pre>
+                        </div>
+                        <div style="margin-bottom:10px">
+                            <strong>Computer Vision AI:</strong>
+                            <pre style="background:#1b1f24;color:#c9d1d9;padding:8px 10px;border-radius:4px;font-size:0.72rem;overflow-x:auto;margin:4px 0">curl -X POST http://&lt;host&gt;:8080/api/data/write \
+  -H "Authorization: Bearer &lt;token&gt;" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "measurement": "vision_ai",
+    "tags": {"camera": "cam01", "model": "defect_v2"},
+    "fields": {"defect_detected": 0, "confidence": 0.98, "inference_ms": 45}
+  }'</pre>
+                        </div>
+                        <div style="margin-bottom:10px">
+                            <strong>Old Equipment (manual reading):</strong>
+                            <pre style="background:#1b1f24;color:#c9d1d9;padding:8px 10px;border-radius:4px;font-size:0.72rem;overflow-x:auto;margin:4px 0">curl -X POST http://&lt;host&gt;:8080/api/data/write \
+  -H "Authorization: Bearer &lt;token&gt;" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "measurement": "manual_reading",
+    "tags": {"equipment": "OldBoiler1", "operator": "silvio"},
+    "fields": {"temperature": 85.5, "pressure": 2.3}
+  }'</pre>
+                        </div>
+                        <div>
+                            <strong>Batch (multiple points):</strong>
+                            <pre style="background:#1b1f24;color:#c9d1d9;padding:8px 10px;border-radius:4px;font-size:0.72rem;overflow-x:auto;margin:4px 0">curl -X POST http://&lt;host&gt;:8080/api/data/write \
+  -H "Authorization: Bearer &lt;token&gt;" \
+  -H "Content-Type: application/json" \
+  -d '[
+    {"measurement": "production", "tags": {"line": "L1"}, "fields": {"count": 150, "reject": 3}},
+    {"measurement": "production", "tags": {"line": "L2"}, "fields": {"count": 200, "reject": 1}}
+  ]'</pre>
+                        </div>
+                        <p style="margin:8px 0 0;color:var(--text-muted);font-size:0.72rem">All data is stored in InfluxDB and visible in Grafana. Also published to MQTT at <code>plc4x/_custom/{measurement}</code>. Full docs in the <strong>API</strong> tab (Swagger).</p>
+                    </div>
+                </details>
+                <div style="margin-top:16px;padding:12px 14px;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-sm);font-size:0.82rem">
+                    <strong style="display:block;margin-bottom:8px">Default Credentials</strong>
+                    <table style="width:100%;border-collapse:collapse;font-size:0.8rem">
+                        <tr style="border-bottom:1px solid var(--border)">
+                            <td style="padding:4px 8px"><strong>PLC4X Manager</strong></td>
+                            <td style="padding:4px 8px;font-family:var(--font-mono)">admin / admin</td>
+                            <td style="padding:4px 8px;color:var(--text-muted)">This web panel (port 8080)</td>
+                        </tr>
+                        <tr style="border-bottom:1px solid var(--border)">
+                            <td style="padding:4px 8px"><strong>Grafana</strong></td>
+                            <td style="padding:4px 8px;font-family:var(--font-mono)">admin / admin</td>
+                            <td style="padding:4px 8px;color:var(--text-muted)">Dashboards (port 3000)</td>
+                        </tr>
+                        <tr style="border-bottom:1px solid var(--border)">
+                            <td style="padding:4px 8px"><strong>InfluxDB</strong></td>
+                            <td style="padding:4px 8px;font-family:var(--font-mono)">admin / plc4x-admin</td>
+                            <td style="padding:4px 8px;color:var(--text-muted)">Time-series DB (port 8086)</td>
+                        </tr>
+                        <tr style="border-bottom:1px solid var(--border)">
+                            <td style="padding:4px 8px"><strong>OPC-UA</strong></td>
+                            <td style="padding:4px 8px;font-family:var(--font-mono)">admin / password</td>
+                            <td style="padding:4px 8px;color:var(--text-muted)">OPC-UA clients (port 12687)</td>
+                        </tr>
+                        <tr>
+                            <td style="padding:4px 8px"><strong>MQTT</strong></td>
+                            <td style="padding:4px 8px;font-family:var(--font-mono)">no auth required</td>
+                            <td style="padding:4px 8px;color:var(--text-muted)">Anonymous access (port 1883)</td>
+                        </tr>
+                    </table>
+                </div>
+            </div>
+        </div>
+        <script>
+            // Fix external service links
+            function fixServiceLinks() {
+                var h = location.protocol + "//" + location.hostname;
+                document.querySelectorAll("[data-service-link]").forEach(function(el) {
+                    el.href = h + ":" + el.dataset.serviceLink;
+                });
+                var gs = document.getElementById("gettingStartedGrafana");
+                if (gs) gs.href = h + ":3000";
+            }
+            fixServiceLinks();
+        </script>
+    </div>
+
+    <!-- Tab: Live Data -->
+    <div id="tab-live" class="tab-content" style="display:none">
+        <div class="card">
+            <div class="card-header">
+                <h2>Live OPC-UA Data</h2>
+                <div class="header-controls">
+                    <label class="checkbox-label">
+                        <input type="checkbox" id="liveAutoRefresh" checked onchange="toggleLiveRefresh()">
+                        Auto-refresh
+                    </label>
+                    <select id="liveInterval" class="select-sm" onchange="setLiveInterval()">
+                        <option value="3000">3s</option>
+                        <option value="5000" selected>5s</option>
+                        <option value="10000">10s</option>
+                        <option value="30000">30s</option>
+                    </select>
+                    <button class="btn btn-outline btn-sm" onclick="loadLiveData()">Read Now</button>
+                </div>
+            </div>
+            <div class="card-body" id="liveContent">
+                <p class="text-muted">Connecting to OPC-UA server...</p>
+            </div>
+        </div>
+    </div>
+
+    <!-- Tab: Devices -->
+    <div id="tab-devices" class="tab-content" style="display:none">
+        <div class="card">
+            <div class="card-header">
+                <h2>Devices (PLCs)</h2>
+                <div style="display:flex;gap:8px">
+                    <button class="btn btn-outline btn-sm" onclick="loadDemoDevices()">Load Demo Devices</button>
+                    <button class="btn btn-primary" onclick="openAddDevice()">+ Add Device</button>
+                </div>
+            </div>
+            <div class="card-body" id="deviceList">
+                <p class="text-muted">Loading...</p>
+            </div>
+        </div>
+    </div>
+
+    <!-- Tab: OPC-UA Server -->
+    <div id="tab-server" class="tab-content" style="display:none">
+        <div class="card">
+            <div class="card-header">
+                <h2>OPC-UA Server Configuration</h2>
+                <button class="btn btn-primary" onclick="saveServerConfig()">Save</button>
+            </div>
+            <div class="card-body">
+                <div class="form-row">
+                    <div class="form-group">
+                        <label>Server Name <span class="help-icon" tabindex="0">?<span class="tooltip-text">Name displayed in OPC-UA clients. No spaces.</span></span></label>
+                        <input type="text" id="serverName" placeholder="Plc4xOPCUAServer">
+                    </div>
+                    <div class="form-group">
+                        <label>TCP Port <span class="help-icon" tabindex="0">?<span class="tooltip-text">Port for OPC-UA connections. Default: 12687. Requires restart.</span></span></label>
+                        <input type="number" id="serverPort" placeholder="12687">
+                    </div>
+                </div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label>Security Directory <span class="help-icon" tabindex="0">?<span class="tooltip-text">Internal path for certificates. Do not change unless necessary.</span></span></label>
+                        <input type="text" id="serverDir" placeholder="/app/security">
+                    </div>
+                    <div class="form-group">
+                        <label>Config Version <span class="help-icon" tabindex="0">?<span class="tooltip-text">PLC4X config format version. Keep as 0.8.</span></span></label>
+                        <input type="text" id="serverVersion" placeholder="0.8">
+                    </div>
+                </div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label>Disable Insecure Endpoint <span class="help-icon" tabindex="0">?<span class="tooltip-text">When Yes, only encrypted connections allowed from external hosts.</span></span></label>
+                        <select id="serverInsecure">
+                            <option value="false">No (allows unencrypted connections on all interfaces)</option>
+                            <option value="true">Yes (encrypted only; unencrypted only on localhost)</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>OPC-UA Endpoint Path <span class="help-icon" tabindex="0">?<span class="tooltip-text">Fixed path in the PLC4X server. Cannot be changed.</span></span></label>
+                        <input type="text" id="serverPath" value="/plc4x" disabled>
+                        <span class="field-hint">Hardcoded in PLC4X server</span>
+                    </div>
+                </div>
+                <div class="info-box" style="margin-top:16px">
+                    <strong>Endpoint Preview:</strong>
+                    <code id="endpointPreview">opc.tcp://&lt;host&gt;:12687/plc4x</code>
+                </div>
+                <p class="text-muted" style="margin-top:12px;font-size:13px">
+                    Supported security policies: None, Basic256Sha256 (SignAndEncrypt).<br>
+                    Authentication modes: Anonymous, Username/Password, X.509 Certificate.<br>
+                    After saving, restart the server to apply changes.
+                </p>
+            </div>
+        </div>
+
+        <!-- Manager Version -->
+        <div class="card">
+            <div class="card-header">
+                <h2>Manager Version <span class="help-icon" tabindex="0">?<span class="tooltip-text">Check for PLC4X Manager updates from GitHub and apply with one click. The system will pull changes, rebuild containers, and restart.</span></span></h2>
+            </div>
+            <div class="card-body">
+                <div id="managerUpdateBanner" style="display:none;padding:10px 14px;border-radius:6px;background:var(--primary-light, #fce8eb);border:1px solid var(--primary);margin-bottom:14px">
+                    <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">
+                        <div>
+                            <strong style="color:var(--primary)">Update available!</strong>
+                            <span id="managerBannerText" style="margin-left:6px"></span>
+                        </div>
+                        <button class="btn btn-primary btn-sm" onclick="updateManager()">Update Now</button>
+                    </div>
+                </div>
+                <div style="display:flex;gap:24px;flex-wrap:wrap;align-items:flex-start">
+                    <div>
+                        <label style="font-size:0.8rem;font-weight:600;display:block;margin-bottom:4px">Current Version</label>
+                        <span id="managerCurrentVersion" style="font-size:1.1rem;font-weight:700">—</span>
+                        <span id="managerCurrentCommit" style="font-size:0.75rem;color:var(--text-secondary);margin-left:6px"></span>
+                    </div>
+                    <div id="managerLatestInfo" style="display:none">
+                        <label style="font-size:0.8rem;font-weight:600;display:block;margin-bottom:4px">Latest Version</label>
+                        <span id="managerLatestVersion" style="font-size:1.1rem;font-weight:700">—</span>
+                        <span id="managerNewCommits" style="font-size:0.75rem;color:var(--text-secondary);margin-left:6px"></span>
+                    </div>
+                </div>
+                <div id="managerChangelog" style="display:none;margin-top:12px;max-height:200px;overflow-y:auto;padding:8px 12px;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-sm);font-size:0.8rem;font-family:var(--font-mono)"></div>
+                <div style="display:flex;gap:8px;align-items:center;margin-top:12px;flex-wrap:wrap">
+                    <button class="btn btn-outline btn-sm" onclick="checkManagerUpdate()">Check for Updates</button>
+                    <button class="btn btn-primary btn-sm" id="btnManagerUpdate" style="display:none" onclick="updateManager()">Apply Update</button>
+                    <button class="btn btn-outline btn-sm" id="btnManagerRollback" style="display:none" onclick="rollbackManager()">Rollback</button>
+                </div>
+                <div id="managerUpdateStatus" style="margin-top:8px"></div>
+            </div>
+        </div>
+
+        <!-- PLC4X Version Management -->
+        <div class="card">
+            <div class="card-header">
+                <h2>PLC4X Version <span class="help-icon" tabindex="0">?<span class="tooltip-text">Update or downgrade the Apache PLC4X OPC-UA Server jar. Downloads from Maven Central. The server will restart automatically.</span></span></h2>
+            </div>
+            <div class="card-body">
+                <div id="plc4xUpdateBanner" style="display:none;padding:10px 14px;border-radius:6px;background:var(--primary-light, #fce8eb);border:1px solid var(--primary);margin-bottom:14px;display:none">
+                    <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">
+                        <div>
+                            <strong style="color:var(--primary)">New version available!</strong>
+                            <span id="plc4xBannerText" style="margin-left:6px"></span>
+                        </div>
+                        <button class="btn btn-primary btn-sm" onclick="applyLatestVersion()" style="white-space:nowrap">Update Now</button>
+                    </div>
+                </div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label>Current Version <span class="help-icon" tabindex="0">?<span class="tooltip-text">The PLC4X jar version currently running on the server.</span></span></label>
+                        <input type="text" id="plc4xCurrentVersion" readonly style="opacity:0.7">
+                    </div>
+                    <div class="form-group">
+                        <label>Change to Version <span class="help-icon" tabindex="0">?<span class="tooltip-text">Enter any PLC4X version (upgrade or downgrade). The jar will be downloaded from Maven Central and the server will restart. The current version is backed up automatically.</span></span></label>
+                        <input type="text" id="plc4xNewVersion" placeholder="e.g., 0.13.0">
+                        <span class="field-hint">Available versions: <a href="https://repo1.maven.org/maven2/org/apache/plc4x/plc4x-opcua-server/" target="_blank" style="color:var(--primary)">Maven Central</a></span>
+                    </div>
+                </div>
+                <div style="display:flex;gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap">
+                    <button class="btn btn-primary" onclick="updatePlc4x()">Apply Version</button>
+                    <button class="btn btn-outline" onclick="rollbackPlc4x()" id="btnRollback" style="display:none" title="Swap back to the version that was running before the last change">Undo Last Change (<span id="rollbackVersionLabel">?</span>)</button>
+                </div>
+                <div id="plc4xUpdateStatus" style="margin-top:12px"></div>
+            </div>
+        </div>
+
+        <!-- PLC Connection Safety (admin only, EtherNet/IP monitoring) -->
+        <div class="card" id="plcSafetyCard" style="display:none">
+            <div class="card-header">
+                <h2>PLC Connection Safety <span class="help-icon" tabindex="0">?<span class="tooltip-text">Monitor the pylogix microservice: lock status, rate limits, and recent PLC connections. Helps detect runaway pollers or configuration errors before they affect production.</span></span></h2>
+                <button class="btn btn-outline btn-sm" onclick="loadPLCTagStats()">Refresh</button>
+            </div>
+            <div class="card-body">
+                <div id="plctagStats"><p class="text-muted">Click Refresh to load PLC connection statistics.</p></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Tab: Security -->
+    <div id="tab-security" class="tab-content" style="display:none">
+        <!-- Security Status -->
+        <div class="card">
+            <div class="card-header">
+                <h2>Security Status</h2>
+            </div>
+            <div class="card-body" id="securityStatus">
+                <p class="text-muted">Loading...</p>
+            </div>
+        </div>
+
+        <!-- OPC-UA Users -->
+        <div class="card">
+            <div class="card-header">
+                <h2>OPC-UA Users</h2>
+                <button class="btn btn-primary" onclick="openAddUser()">+ Add User</button>
+            </div>
+            <div class="card-body" id="userList">
+                <p class="text-muted">Loading...</p>
+            </div>
+        </div>
+
+        <!-- Admin Panel Credentials -->
+        <div class="card">
+            <div class="card-header">
+                <h2>Admin Panel Credentials <span class="help-icon" tabindex="0">?<span class="tooltip-text">Change the username and password used to log in to this admin panel. This is separate from OPC-UA user accounts.</span></span></h2>
+            </div>
+            <div class="card-body">
+                <p class="text-muted" style="margin-bottom:12px;font-size:13px">
+                    These credentials are used to access this web admin panel (JWT/Basic Auth).
+                    Changes take effect after container restart.
+                </p>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label>Current Username <span class="help-icon" tabindex="0">?<span class="tooltip-text">The username used to log in to this web admin panel. Set via ADMIN_USERNAME in .env.</span></span></label>
+                        <input type="text" id="adminUsername" readonly style="opacity:0.7">
+                    </div>
+                    <div class="form-group">
+                        <label>New Password <span class="help-icon" tabindex="0">?<span class="tooltip-text">New password for the web admin panel login. Takes effect after container restart.</span></span></label>
+                        <input type="password" id="newAdminPassword" placeholder="Enter new admin password">
+                    </div>
+                </div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label>Confirm New Password <span class="help-icon" tabindex="0">?<span class="tooltip-text">Re-type the new password to confirm.</span></span></label>
+                        <input type="password" id="confirmAdminPassword" placeholder="Confirm new password">
+                    </div>
+                    <div class="form-group" style="display:flex;align-items:flex-end">
+                        <button class="btn btn-primary" onclick="changeAdminPassword()">Change Password</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Keystore Password -->
+        <div class="card">
+            <div class="card-header">
+                <h2>Keystore Password <span class="help-icon" tabindex="0">?<span class="tooltip-text">Password for the OPC-UA server's PKCS12 certificate keystore. Only change this if you know what you're doing.</span></span></h2>
+            </div>
+            <div class="card-body">
+                <p class="text-muted" style="margin-bottom:12px;font-size:13px">
+                    The keystore password protects the server's PKCS12 certificate store.
+                    Changing it requires a server restart and security re-initialization.
+                </p>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label>New Keystore Password <span class="help-icon" tabindex="0">?<span class="tooltip-text">New password for the PKCS12 certificate keystore. Requires server restart and security re-initialization.</span></span></label>
+                        <input type="password" id="newKeystorePassword" placeholder="Enter new password">
+                    </div>
+                    <div class="form-group" style="display:flex;align-items:flex-end">
+                        <button class="btn btn-primary" onclick="changeKeystorePassword()">Update Password</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- PKI Certificates -->
+        <div class="card">
+            <div class="card-header">
+                <h2>PKI Certificates</h2>
+            </div>
+            <div class="card-body">
+                <p class="text-muted" style="margin-bottom:12px;font-size:13px">
+                    When OPC-UA clients connect with certificate-based security, their certificates
+                    are initially placed in the <code>rejected</code> directory. Move them to
+                    <code>trusted</code> to allow the connection.
+                </p>
+                <h4 class="section-label">Trusted Certificates</h4>
+                <div id="trustedCerts"><p class="text-muted">Loading...</p></div>
+
+                <h4 class="section-label" style="margin-top:16px">Rejected Certificates</h4>
+                <div id="rejectedCerts"><p class="text-muted">Loading...</p></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Tab: Logs -->
+    <div id="tab-logs" class="tab-content" style="display:none">
+        <div class="card">
+            <div class="card-header">
+                <h2>Server Logs</h2>
+                <div class="header-controls">
+                    <select id="logLines" class="select-sm">
+                        <option value="50">50 lines</option>
+                        <option value="100">100 lines</option>
+                        <option value="200">200 lines</option>
+                        <option value="500">500 lines</option>
+                    </select>
+                    <button class="btn btn-outline btn-sm" onclick="loadLogs()">Refresh</button>
+                </div>
+            </div>
+            <div class="card-body">
+                <div class="log-container" id="logContent">Click "Refresh" to load the logs.</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Tab: Backups -->
+    <div id="tab-backups" class="tab-content" style="display:none">
+        <div class="card">
+            <div class="card-header">
+                <h2>Configuration Backups</h2>
+                <div style="display:flex;gap:8px;flex-wrap:wrap">
+                    <button class="btn btn-primary btn-sm" onclick="createBackupNow()">Backup Now</button>
+                    <label class="btn btn-outline btn-sm" style="cursor:pointer;margin:0">
+                        Restore from File
+                        <input type="file" accept=".yml,.yaml" style="display:none" onchange="restoreFromFile(this)">
+                    </label>
+                    <button class="btn btn-outline btn-sm" onclick="cleanupBackups()">Cleanup Old</button>
+                </div>
+            </div>
+            <div class="card-body" id="backupList">
+                <p class="text-muted">Loading...</p>
+            </div>
+        </div>
+    </div>
+
+    <!-- Tab: HMI -->
+    <div id="tab-hmi" class="tab-content" style="display:none">
+        <div class="card">
+            <div class="card-header">
+                <h2>HMI / Synoptic View</h2>
+                <div style="display:flex;gap:8px">
+                    <button class="btn btn-primary btn-sm" id="hmiAddBtn" onclick="hmiCreatePlant()">+ Plant</button>
+                    <button class="btn btn-outline btn-sm" id="hmiEditBtn" onclick="hmiToggleEdit()" style="display:none">Edit Mode</button>
+                    <button class="btn btn-outline btn-sm" id="hmiFullscreenBtn" onclick="hmiFullscreen()" style="display:none">Fullscreen</button>
+                    <button class="btn btn-outline btn-sm" id="hmiLoadDemoBtn" onclick="hmiLoadDemo()">Load Demo</button>
+                </div>
+            </div>
+            <div class="card-body" id="hmiContent">
+                <p class="text-muted" style="text-align:center;padding:32px">No HMI screens configured. Click <strong>+ Plant</strong> or <strong>Load Demo</strong> to get started.</p>
+            </div>
+        </div>
+    </div>
+
+    <!-- Tab: Alarms -->
+    <div id="tab-alarms" class="tab-content" style="display:none">
+        <div class="card">
+            <div class="card-header">
+                <h2>Alarms</h2>
+                <div style="display:flex;gap:8px;align-items:center">
+                    <label style="display:flex;align-items:center;gap:6px;font-size:0.85rem;cursor:pointer">
+                        <input type="checkbox" id="alarmSoundEnabled"> Sound
+                    </label>
+                    <button class="btn btn-outline btn-sm" onclick="alarmAcknowledgeAll()">Acknowledge All</button>
+                    <button class="btn btn-outline btn-sm" onclick="loadAlarms()">Refresh</button>
+                </div>
+            </div>
+            <div class="card-body">
+                <div style="cursor:pointer;display:flex;align-items:center;gap:8px;margin-bottom:12px" onclick="var el=document.getElementById('alarmsActiveBody');el.style.display=el.style.display==='none'?'block':'none';this.querySelector('.chevron').textContent=el.style.display==='none'?'▶':'▼'">
+                    <span class="chevron" style="font-size:0.75rem">▼</span>
+                    <h3 style="margin:0">Active Alarms</h3>
+                    <span id="alarmsActiveCount" class="status-badge badge-ok">0</span>
+                </div>
+                <div id="alarmsActiveBody">
+                    <div id="alarmsActiveList"><p class="text-muted">No active alarms.</p></div>
+                </div>
+                <div style="cursor:pointer;display:flex;align-items:center;gap:8px;margin-top:24px;margin-bottom:12px" onclick="var el=document.getElementById('alarmsHistoryBody');el.style.display=el.style.display==='none'?'block':'none';this.querySelector('.chevron').textContent=el.style.display==='none'?'▶':'▼'">
+                    <span class="chevron" style="font-size:0.75rem">▼</span>
+                    <h3 style="margin:0">Recent History</h3>
+                </div>
+                <div id="alarmsHistoryBody">
+                    <div id="alarmsHistoryList"><p class="text-muted">No alarm history.</p></div>
+                </div>
+            </div>
+        </div>
+
+        <div class="card" style="margin-top:16px">
+            <div class="card-header"><h2>Alarm Configuration</h2></div>
+            <div class="card-body">
+                <p style="margin-bottom:12px">Set alarm thresholds for each tag. The poller evaluates thresholds every cycle.</p>
+                <div id="alarmConfigList"><p class="text-muted">Loading...</p></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Tab: OEE -->
+    <div id="tab-oee" class="tab-content" style="display:none">
+        <div class="card">
+            <div class="card-header">
+                <h2>OEE — Overall Equipment Effectiveness</h2>
+                <div style="display:flex;gap:8px;align-items:center">
+                    <select id="oeeDevice" onchange="loadOEEData()" style="min-width:160px"></select>
+                    <select id="oeeHours" onchange="loadOEEData()">
+                        <option value="1">1h</option>
+                        <option value="8">8h (shift)</option>
+                        <option value="12">12h</option>
+                        <option value="24" selected>24h</option>
+                        <option value="168">7 days</option>
+                        <option value="720">30 days</option>
+                    </select>
+                    <button class="btn btn-outline btn-sm" onclick="showOEEConfigModal()">Configure</button>
+                </div>
+            </div>
+            <div class="card-body">
+                <div id="oeeGauges" style="display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-bottom:24px">
+                    <div class="text-muted" style="grid-column:1/-1;text-align:center;padding:32px">Select a device with OEE configured, or click <strong>Configure</strong> to set up.</div>
+                </div>
+                <div id="oeeDetails" style="margin-bottom:24px"></div>
+                <h3 style="margin-bottom:12px">Trend</h3>
+                <div id="oeeTrend" style="width:100%;height:200px;position:relative">
+                    <p class="text-muted" style="text-align:center;padding:32px">No trend data.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Tab: Reports -->
+    <div id="tab-reports" class="tab-content" style="display:none">
+        <div class="card">
+            <div class="card-header">
+                <h2>Reports & Export</h2>
+            </div>
+            <div class="card-body">
+                <div style="display:flex;gap:24px;flex-wrap:wrap">
+
+                    <!-- PDF Report -->
+                    <div style="flex:1;min-width:280px;border:1px solid var(--border);border-radius:6px;padding:16px">
+                        <h3 style="margin-bottom:12px">PDF Report</h3>
+                        <p class="text-muted" style="font-size:0.85rem;margin-bottom:12px">Generate a report with device status, tag statistics (min/max/avg), active alarms, and alarm history.</p>
+                        <div class="form-group">
+                            <label>Period</label>
+                            <select id="reportPdfHours">
+                                <option value="1">Last 1 hour</option>
+                                <option value="6">Last 6 hours</option>
+                                <option value="12">Last 12 hours</option>
+                                <option value="24" selected>Last 24 hours</option>
+                                <option value="48">Last 48 hours</option>
+                                <option value="168">Last 7 days</option>
+                                <option value="720">Last 30 days</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label>Device (optional)</label>
+                            <select id="reportPdfDevice"><option value="">All devices</option></select>
+                        </div>
+                        <div class="form-group">
+                            <label>Plant (optional)</label>
+                            <select id="reportPdfPlant"><option value="">All plants</option></select>
+                        </div>
+                        <button class="btn btn-primary" onclick="downloadReport('pdf', event)">Download PDF</button>
+                    </div>
+
+                    <!-- CSV Export -->
+                    <div style="flex:1;min-width:280px;border:1px solid var(--border);border-radius:6px;padding:16px">
+                        <h3 style="margin-bottom:12px">CSV Export</h3>
+                        <p class="text-muted" style="font-size:0.85rem;margin-bottom:12px">Export raw tag history from InfluxDB as CSV. Open in Excel, Google Sheets, or any data tool.</p>
+                        <div class="form-group">
+                            <label>Period</label>
+                            <select id="reportCsvHours">
+                                <option value="1">Last 1 hour</option>
+                                <option value="6">Last 6 hours</option>
+                                <option value="12">Last 12 hours</option>
+                                <option value="24" selected>Last 24 hours</option>
+                                <option value="48">Last 48 hours</option>
+                                <option value="168">Last 7 days</option>
+                                <option value="720">Last 30 days</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label>Device (optional)</label>
+                            <select id="reportCsvDevice"><option value="">All devices</option></select>
+                        </div>
+                        <div class="form-group">
+                            <label>Tag (optional)</label>
+                            <select id="reportCsvTag"><option value="">All tags</option></select>
+                        </div>
+                        <button class="btn btn-primary" onclick="downloadReport('csv', event)">Download CSV</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Tab: Audit Trail -->
+    <div id="tab-audit" class="tab-content" style="display:none">
+        <div class="card">
+            <div class="card-header">
+                <h2>Audit Trail</h2>
+                <div style="display:flex;gap:8px;align-items:center">
+                    <select id="auditFilter" onchange="loadAudit()">
+                        <option value="">All actions</option>
+                        <option value="login">Login</option>
+                        <option value="login_failed">Login Failed</option>
+                        <option value="POST">Create (POST)</option>
+                        <option value="PUT">Update (PUT)</option>
+                        <option value="DELETE">Delete (DELETE)</option>
+                    </select>
+                    <select id="auditLines" onchange="loadAudit()">
+                        <option value="50">Last 50</option>
+                        <option value="100">Last 100</option>
+                        <option value="200" selected>Last 200</option>
+                        <option value="500">Last 500</option>
+                        <option value="1000">Last 1000</option>
+                    </select>
+                    <button class="btn btn-outline btn-sm" onclick="loadAudit()">Refresh</button>
+                </div>
+            </div>
+            <div class="card-body">
+                <div id="auditContent"><p class="text-muted">Loading...</p></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Tab: Logbook -->
+    <div id="tab-logbook" class="tab-content" style="display:none">
+        <div class="card">
+            <div class="card-header">
+                <h2>Shift Logbook</h2>
+                <div style="display:flex;gap:8px;align-items:center">
+                    <select id="logbookShiftFilter" onchange="loadLogbook()" style="font-size:0.85rem">
+                        <option value="">All Shifts</option>
+                        <option value="morning">Morning 06-14</option>
+                        <option value="afternoon">Afternoon 14-22</option>
+                        <option value="night">Night 22-06</option>
+                    </select>
+                    <button class="btn btn-primary btn-sm" id="logbookNewEntryBtn" onclick="showLogbookForm()">+ New Entry</button>
+                    <button class="btn btn-outline btn-sm" onclick="loadLogbook()">Refresh</button>
+                </div>
+            </div>
+            <div class="card-body">
+                <div id="logbookForm" style="display:none;margin-bottom:1.2rem;padding:1rem;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius)">
+                    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:8px">
+                        <div>
+                            <label style="font-size:0.8rem;font-weight:600;display:block;margin-bottom:4px">Category</label>
+                            <select id="logbookCategory" style="width:100%">
+                                <option value="observation">Observation</option>
+                                <option value="incident">Incident</option>
+                                <option value="maintenance">Maintenance</option>
+                                <option value="handover">Handover</option>
+                                <option value="alarm">Alarm</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label style="font-size:0.8rem;font-weight:600;display:block;margin-bottom:4px">Priority</label>
+                            <select id="logbookPriority" style="width:100%">
+                                <option value="normal">Normal</option>
+                                <option value="important">Important</option>
+                                <option value="critical">Critical</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label style="font-size:0.8rem;font-weight:600;display:block;margin-bottom:4px">Shift</label>
+                            <select id="logbookShift" style="width:100%">
+                                <option value="morning">Morning 06-14</option>
+                                <option value="afternoon">Afternoon 14-22</option>
+                                <option value="night">Night 22-06</option>
+                            </select>
+                        </div>
+                    </div>
+                    <textarea id="logbookMessage" rows="4" placeholder="Enter your observation, incident note, or handover message..." style="width:100%;box-sizing:border-box;resize:vertical;font-family:var(--font-sans);font-size:0.88rem;padding:8px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--bg-card);color:var(--text)"></textarea>
+                    <div style="display:flex;gap:8px;margin-top:8px;justify-content:flex-end">
+                        <button class="btn btn-outline btn-sm" onclick="document.getElementById('logbookForm').style.display='none'">Cancel</button>
+                        <button class="btn btn-primary btn-sm" onclick="saveLogbookEntry()">Save</button>
+                    </div>
+                </div>
+                <div id="logbookEntries"><p class="text-muted">Loading...</p></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Tab: Analytics (Grafana embedded) -->
+    <div id="tab-analytics" class="tab-content" style="display:none">
+        <div class="card">
+            <div class="card-header">
+                <h2>Analytics</h2>
+                <div style="display:flex;gap:8px;align-items:center">
+                    <select id="grafanaDashboard" onchange="loadGrafanaDashboard()" style="font-size:0.85rem">
+                        <option value="plc4x-overview">Overview</option>
+                        <option value="plc4x-plant-overview">Plant Overview</option>
+                        <option value="plc4x-device-detail">Device Detail</option>
+                        <option value="plc4x-alarms">Alarms &amp; Anomalies</option>
+                        <option value="plc4x-energy">Energy Monitor</option>
+                        <option value="plc4x-predictions">AI Predictions</option>
+                        <option value="plc4x-ml-insights">ML Insights</option>
+                        <option value="plc4x-custom-data">Custom Data</option>
+                        <option value="plc4x-system-health">System Health</option>
+                    </select>
+                    <select id="grafanaTimeRange" onchange="loadGrafanaDashboard()" style="font-size:0.85rem">
+                        <option value="now-1h">Last 1h</option>
+                        <option value="now-6h">Last 6h</option>
+                        <option value="now-24h" selected>Last 24h</option>
+                        <option value="now-7d">Last 7 days</option>
+                        <option value="now-30d">Last 30 days</option>
+                    </select>
+                    <button class="btn btn-outline btn-sm" onclick="loadGrafanaDashboard()" title="Refresh">Refresh</button>
+                    <button class="btn btn-outline btn-sm" onclick="openGrafanaFullscreen()" title="Open in Grafana">Open Grafana</button>
+                </div>
+            </div>
+            <div class="card-body" style="padding:0;overflow:hidden;">
+                <iframe id="grafanaFrame" style="width:100%;height:calc(100vh - 200px);min-height:500px;border:none;" src="about:blank"></iframe>
+            </div>
+        </div>
+    </div>
+
+    <!-- Tab: AI / ML -->
+    <div id="tab-ml" class="tab-content" style="display:none">
+
+        <!-- Section 1: ML Engine Status -->
+        <div class="card" id="mlStatusCard">
+            <div class="card-header">
+                <h2>ML Engine Status</h2>
+                <button class="btn btn-outline btn-sm" onclick="loadMLStatus()">Refresh</button>
+            </div>
+            <div class="card-body">
+                <div id="mlStatusBody" style="display:flex;flex-wrap:wrap;gap:24px;align-items:flex-start">
+                    <div style="min-width:160px">
+                        <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+                            <span id="mlEngineIndicator" style="display:inline-block;width:12px;height:12px;border-radius:50%;background:var(--text-muted)"></span>
+                            <span id="mlEngineLabel" style="font-weight:600">Checking...</span>
+                        </div>
+                        <div style="font-size:0.82rem;color:var(--text-secondary)">
+                            <div>Last run: <strong id="mlLastRun">—</strong></div>
+                            <div>Tags analyzed: <strong id="mlTagsAnalyzed">—</strong></div>
+                            <div>Cycle duration: <strong id="mlCycleDuration">—</strong></div>
+                        </div>
+                    </div>
+                    <div style="min-width:160px;font-size:0.82rem;color:var(--text-secondary)">
+                        <div>Cycle interval: <strong id="mlCycleInterval">—</strong></div>
+                        <div>Forecast horizon: <strong id="mlForecastHours">—</strong></div>
+                        <div>Min data points: <strong id="mlMinPoints">—</strong></div>
+                    </div>
+                    <div style="min-width:240px" id="mlModuleToggles">
+                        <div style="font-size:0.8rem;font-weight:600;margin-bottom:6px;color:var(--text-secondary)">ACTIVE MODULES</div>
+                        <div id="mlModuleList" style="display:flex;flex-wrap:wrap;gap:6px"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Section 2: Active ML Alerts -->
+        <div class="card" id="mlAlertsCard">
+            <div class="card-header">
+                <h2>Active ML Alerts</h2>
+                <div style="display:flex;gap:8px;align-items:center">
+                    <select id="mlAlertHours" onchange="loadMLAlerts()" style="font-size:0.85rem">
+                        <option value="6">Last 6h</option>
+                        <option value="24" selected>Last 24h</option>
+                        <option value="72">Last 72h</option>
+                        <option value="168">Last 7 days</option>
+                    </select>
+                    <button class="btn btn-outline btn-sm" onclick="loadMLAlerts()">Refresh</button>
+                </div>
+            </div>
+            <div class="card-body">
+                <div id="mlAlerts" style="display:flex;flex-direction:column;gap:8px">
+                    <div style="color:var(--text-muted);font-size:0.85rem">Loading alerts...</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Section 3: Configuration (admin only) -->
+        <div class="card" id="mlConfigCard">
+            <div class="card-header">
+                <h2>ML Configuration</h2>
+                <div style="display:flex;gap:8px">
+                    <button class="btn btn-primary btn-sm" onclick="saveMLConfig()">Save Configuration</button>
+                    <button class="btn btn-outline btn-sm" onclick="triggerMLRun()" style="border-color:var(--primary);color:var(--primary)">Run Now</button>
+                </div>
+            </div>
+            <div class="card-body">
+                <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:16px">
+
+                    <!-- General Settings -->
+                    <div>
+                        <div style="font-size:0.8rem;font-weight:600;color:var(--text-secondary);margin-bottom:10px;text-transform:uppercase;letter-spacing:.05em">General</div>
+                        <label style="display:block;margin-bottom:8px;font-size:0.85rem">
+                            Cycle Interval (minutes)
+                            <input type="number" id="mlCfgCycleInterval" min="1" max="60" value="5" class="form-control" style="margin-top:4px">
+                        </label>
+                        <label style="display:block;margin-bottom:8px;font-size:0.85rem">
+                            Forecast Horizon (hours)
+                            <input type="number" id="mlCfgForecastHours" min="1" max="48" value="2" class="form-control" style="margin-top:4px">
+                        </label>
+                        <label style="display:block;font-size:0.85rem">
+                            Min Data Points
+                            <input type="number" id="mlCfgMinPoints" min="10" max="10000" value="100" class="form-control" style="margin-top:4px">
+                        </label>
+                    </div>
+
+                    <!-- Anomaly Detection -->
+                    <div>
+                        <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+                            <label class="switch" style="margin:0">
+                                <input type="checkbox" id="mlCfgAnomalyEnabled" checked>
+                                <span class="slider"></span>
+                            </label>
+                            <span style="font-size:0.8rem;font-weight:600;color:var(--text-secondary);text-transform:uppercase;letter-spacing:.05em">Anomaly Detection</span>
+                        </div>
+                        <label style="display:block;margin-bottom:8px;font-size:0.85rem">
+                            Contamination (0.01–0.2)
+                            <input type="number" id="mlCfgAnomalyContamination" min="0.01" max="0.2" step="0.01" value="0.05" class="form-control" style="margin-top:4px">
+                        </label>
+                        <label style="display:block;font-size:0.85rem">
+                            Min Algorithms Agreement (1–3)
+                            <input type="number" id="mlCfgAnomalyMinAgreement" min="1" max="3" value="2" class="form-control" style="margin-top:4px">
+                        </label>
+                    </div>
+
+                    <!-- SHAP Explainability -->
+                    <div>
+                        <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+                            <label class="switch" style="margin:0">
+                                <input type="checkbox" id="mlCfgShapEnabled" checked>
+                                <span class="slider"></span>
+                            </label>
+                            <span style="font-size:0.8rem;font-weight:600;color:var(--text-secondary);text-transform:uppercase;letter-spacing:.05em">SHAP Explainability</span>
+                        </div>
+                        <label style="display:block;font-size:0.85rem">
+                            Top Contributors
+                            <input type="number" id="mlCfgShapTop" min="1" max="20" value="5" class="form-control" style="margin-top:4px">
+                        </label>
+                    </div>
+
+                    <!-- Correlation -->
+                    <div>
+                        <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+                            <label class="switch" style="margin:0">
+                                <input type="checkbox" id="mlCfgCorrEnabled" checked>
+                                <span class="slider"></span>
+                            </label>
+                            <span style="font-size:0.8rem;font-weight:600;color:var(--text-secondary);text-transform:uppercase;letter-spacing:.05em">Cross-Tag Correlation</span>
+                        </div>
+                        <label style="display:block;margin-bottom:8px;font-size:0.85rem">
+                            Baseline Window (hours)
+                            <input type="number" id="mlCfgCorrBaseline" min="1" max="168" value="6" class="form-control" style="margin-top:4px">
+                        </label>
+                        <label style="display:block;margin-bottom:8px;font-size:0.85rem">
+                            Recent Window (minutes)
+                            <input type="number" id="mlCfgCorrRecent" min="5" max="240" value="30" class="form-control" style="margin-top:4px">
+                        </label>
+                        <label style="display:block;font-size:0.85rem">
+                            Break Threshold (0.1–0.9)
+                            <input type="number" id="mlCfgCorrBreak" min="0.1" max="0.9" step="0.05" value="0.4" class="form-control" style="margin-top:4px">
+                        </label>
+                    </div>
+
+                    <!-- Change Point -->
+                    <div>
+                        <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+                            <label class="switch" style="margin:0">
+                                <input type="checkbox" id="mlCfgCpEnabled" checked>
+                                <span class="slider"></span>
+                            </label>
+                            <span style="font-size:0.8rem;font-weight:600;color:var(--text-secondary);text-transform:uppercase;letter-spacing:.05em">Change Point Detection</span>
+                        </div>
+                        <label style="display:block;margin-bottom:8px;font-size:0.85rem">
+                            Min Segment Size (points)
+                            <input type="number" id="mlCfgCpMinSeg" min="10" max="500" value="60" class="form-control" style="margin-top:4px">
+                        </label>
+                        <label style="display:block;font-size:0.85rem">
+                            Penalty (higher = fewer changes)
+                            <input type="number" id="mlCfgCpPenalty" min="1" max="100" step="0.5" value="10" class="form-control" style="margin-top:4px">
+                        </label>
+                    </div>
+
+                    <!-- Pattern Matching -->
+                    <div>
+                        <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+                            <label class="switch" style="margin:0">
+                                <input type="checkbox" id="mlCfgPatEnabled" checked>
+                                <span class="slider"></span>
+                            </label>
+                            <span style="font-size:0.8rem;font-weight:600;color:var(--text-secondary);text-transform:uppercase;letter-spacing:.05em">Pattern Matching</span>
+                        </div>
+                        <label style="display:block;margin-bottom:8px;font-size:0.85rem">
+                            Pattern Window Size (points)
+                            <input type="number" id="mlCfgPatWindow" min="10" max="500" value="60" class="form-control" style="margin-top:4px">
+                        </label>
+                        <label style="display:block;font-size:0.85rem">
+                            Top K Patterns
+                            <input type="number" id="mlCfgPatTopK" min="1" max="10" value="3" class="form-control" style="margin-top:4px">
+                        </label>
+                    </div>
+
+                </div>
+            </div>
+        </div>
+
+        <!-- Section 4: Analysis Results -->
+        <div class="card" id="mlResultsCard">
+            <div class="card-header">
+                <h2>Analysis Results</h2>
+                <div style="display:flex;gap:8px;align-items:center">
+                    <select id="mlResultsDevice" onchange="loadMLResults()" style="font-size:0.85rem">
+                        <option value="">Select device...</option>
+                    </select>
+                    <select id="mlResultsHours" onchange="loadMLResults()" style="font-size:0.85rem">
+                        <option value="3">Last 3h</option>
+                        <option value="6" selected>Last 6h</option>
+                        <option value="24">Last 24h</option>
+                        <option value="72">Last 72h</option>
+                    </select>
+                    <button class="btn btn-outline btn-sm" onclick="loadMLResults()">Refresh</button>
+                </div>
+            </div>
+            <div class="card-body">
+
+                <!-- Correlation Matrix -->
+                <div style="margin-bottom:24px">
+                    <h3 style="font-size:0.9rem;font-weight:600;margin-bottom:10px;color:var(--text-secondary)">Correlation Matrix</h3>
+                    <div id="mlCorrMatrix" style="overflow-x:auto">
+                        <div style="color:var(--text-muted);font-size:0.85rem">Select a device to load correlation data.</div>
+                    </div>
+                </div>
+
+                <!-- Change Points -->
+                <div style="margin-bottom:24px">
+                    <h3 style="font-size:0.9rem;font-weight:600;margin-bottom:10px;color:var(--text-secondary)">Change Points</h3>
+                    <div id="mlChangePoints">
+                        <div style="color:var(--text-muted);font-size:0.85rem">No change points detected in selected period.</div>
+                    </div>
+                </div>
+
+                <!-- Patterns -->
+                <div>
+                    <h3 style="font-size:0.9rem;font-weight:600;margin-bottom:10px;color:var(--text-secondary)">Patterns (Motifs &amp; Discords)</h3>
+                    <div id="mlPatterns">
+                        <div style="color:var(--text-muted);font-size:0.85rem">No pattern data available.</div>
+                    </div>
+                </div>
+
+            </div>
+        </div>
+
+        <!-- Section 5: How It Works (collapsible) -->
+        <div class="card">
+            <details>
+                <summary style="cursor:pointer;padding:16px 20px;font-weight:600;font-size:1rem;list-style:none;display:flex;align-items:center;gap:8px">
+                    <span style="color:var(--primary)">&#9654;</span> How It Works — Algorithm Reference
+                </summary>
+                <div class="card-body" style="padding-top:0">
+                    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:20px">
+
+                        <div>
+                            <h3 style="font-size:0.9rem;font-weight:700;color:var(--primary);margin-bottom:6px">Anomaly Detection — PyOD Ensemble</h3>
+                            <p style="font-size:0.83rem;color:var(--text-secondary);line-height:1.5">Three algorithms run simultaneously on each tag: <strong>ECOD</strong> (statistical distribution), <strong>LOF</strong> (local density), and <strong>Isolation Forest</strong> (tree partitioning). A point is flagged as anomalous only when at least 2 of 3 algorithms agree — reducing false positives. Confidence is reported as a percentage.</p>
+                            <p style="font-size:0.79rem;color:var(--text-muted);margin-top:6px"><strong>Tune with:</strong> Contamination (expected % anomalies) and Min Agreement (1=sensitive, 3=strict).</p>
+                        </div>
+
+                        <div>
+                            <h3 style="font-size:0.9rem;font-weight:700;color:var(--primary);margin-bottom:6px">SHAP Explainability</h3>
+                            <p style="font-size:0.83rem;color:var(--text-secondary);line-height:1.5"><strong>SHAP</strong> (SHapley Additive exPlanations) answers "why was this flagged?". It trains a gradient boosting model on tag history and computes the contribution of each feature (tag) to the anomaly prediction. The top contributors are shown as colored bars — positive means the tag pushed toward anomaly, negative means it pulled away.</p>
+                            <p style="font-size:0.79rem;color:var(--text-muted);margin-top:6px"><strong>Tune with:</strong> Top Contributors (how many tags to show).</p>
+                        </div>
+
+                        <div>
+                            <h3 style="font-size:0.9rem;font-weight:700;color:var(--primary);margin-bottom:6px">Cross-Tag Correlation — Statsmodels</h3>
+                            <p style="font-size:0.83rem;color:var(--text-secondary);line-height:1.5">Pearson correlation is computed between all numeric tag pairs. A <em>broken correlation</em> alert fires when a pair that was strongly correlated (e.g., 0.85) drops below the break threshold — indicating a relationship changed, which often precedes failures. The correlation matrix shows all pair relationships at a glance.</p>
+                            <p style="font-size:0.79rem;color:var(--text-muted);margin-top:6px"><strong>Tune with:</strong> Break Threshold (lower = more sensitive alerts).</p>
+                        </div>
+
+                        <div>
+                            <h3 style="font-size:0.9rem;font-weight:700;color:var(--primary);margin-bottom:6px">Change Point Detection — ruptures</h3>
+                            <p style="font-size:0.83rem;color:var(--text-secondary);line-height:1.5">Uses the <strong>PELT</strong> algorithm (Pruned Exact Linear Time) to detect abrupt changes in the statistical properties of a signal — mean, variance, or both. Each detected change point includes the mean before and after, and a severity score based on the magnitude of change. Useful for detecting process regime shifts.</p>
+                            <p style="font-size:0.79rem;color:var(--text-muted);margin-top:6px"><strong>Tune with:</strong> Penalty (higher = fewer detected changes, lower = more sensitive).</p>
+                        </div>
+
+                        <div>
+                            <h3 style="font-size:0.9rem;font-weight:700;color:var(--primary);margin-bottom:6px">Pattern Matching — stumpy (Matrix Profile)</h3>
+                            <p style="font-size:0.83rem;color:var(--text-secondary);line-height:1.5"><strong>stumpy</strong> computes the Matrix Profile — a compact data structure that reveals the most similar subsequences (<em>motifs</em>) and the most unusual subsequences (<em>discords</em>) in a time series. Motifs show recurring patterns; discords flag unusual behavior. Similarity is reported as a percentage (100% = exact match).</p>
+                            <p style="font-size:0.79rem;color:var(--text-muted);margin-top:6px"><strong>Tune with:</strong> Window Size (length of pattern to search) and Top K (how many patterns to return).</p>
+                        </div>
+
+                        <div>
+                            <h3 style="font-size:0.9rem;font-weight:700;color:var(--primary);margin-bottom:6px">Time-Series Forecast (Prophet)</h3>
+                            <p style="font-size:0.83rem;color:var(--text-secondary);line-height:1.5"><strong>Prophet</strong> (by Meta) predicts future tag values based on historical trends and seasonality. It generates a forecast for the next 2 hours with upper and lower confidence bounds. When the actual value falls outside these bounds, it may indicate an unexpected process change. The forecast is updated every cycle and visualized in Grafana.</p>
+                            <p style="font-size:0.79rem;color:var(--text-muted);margin-top:6px"><strong>Tune with:</strong> Forecast Hours (how far ahead to predict). Needs 100+ data points (about 8 minutes at 5s polling).</p>
+                        </div>
+
+                        <div>
+                            <h3 style="font-size:0.9rem;font-weight:700;color:var(--primary);margin-bottom:6px">Trend Analysis — NumPy (Linear Regression)</h3>
+                            <p style="font-size:0.83rem;color:var(--text-secondary);line-height:1.5">Fits a linear regression to the last 24 hours of data and calculates the <strong>rate of change per hour</strong>. A rate of +5.2 means the value is increasing by 5.2 units every hour. This helps identify slowly drifting processes that are hard to spot in real-time — for example, a bearing temperature rising 0.3 degrees per hour over a shift.</p>
+                            <p style="font-size:0.79rem;color:var(--text-muted);margin-top:6px"><strong>Output:</strong> rate_per_hour in InfluxDB. Positive = rising, negative = falling, near zero = stable.</p>
+                        </div>
+
+                        <div>
+                            <h3 style="font-size:0.9rem;font-weight:700;color:var(--primary);margin-bottom:6px">Classic Anomaly Detection — scikit-learn (Isolation Forest)</h3>
+                            <p style="font-size:0.83rem;color:var(--text-secondary);line-height:1.5">The original single-algorithm anomaly detector using <strong>scikit-learn Isolation Forest</strong>. It scores each tag value based on how easy it is to "isolate" from the rest of the data — outliers are isolated quickly and get high anomaly scores. This runs alongside the PyOD ensemble as an additional perspective. Results are written to InfluxDB for historical anomaly tracking.</p>
+                            <p style="font-size:0.79rem;color:var(--text-muted);margin-top:6px"><strong>Note:</strong> The PyOD ensemble (above) also includes Isolation Forest as one of its 3 algorithms, providing a combined view.</p>
+                        </div>
+
+                        <div>
+                            <h3 style="font-size:0.9rem;font-weight:700;margin-bottom:8px">Alert Severity Levels</h3>
+                            <div style="font-size:0.83rem;line-height:1.8">
+                                <div><span style="display:inline-block;width:10px;height:10px;background:#c8102e;border-radius:2px;margin-right:6px"></span><strong>Critical (red)</strong> — Anomaly detected, action required</div>
+                                <div><span style="display:inline-block;width:10px;height:10px;background:#e67e22;border-radius:2px;margin-right:6px"></span><strong>Warning (orange)</strong> — Correlation broke, investigate</div>
+                                <div><span style="display:inline-block;width:10px;height:10px;background:#2980b9;border-radius:2px;margin-right:6px"></span><strong>Info (blue)</strong> — Change point or pattern found</div>
+                            </div>
+                            <div style="margin-top:12px;font-size:0.8rem;color:var(--text-muted)">
+                                <strong>Tips:</strong> Start with defaults. Increase contamination if too many false positives appear. Raise penalty for change points if results are noisy. All results are also available in the <strong>Analytics</strong> tab via the "ML Insights" Grafana dashboard.
+                            </div>
+                        </div>
+
+                    </div>
+                </div>
+            </details>
+        </div>
+
+    </div>
+
+    <!-- Tab: API Docs -->
+    <div id="tab-apidocs" class="tab-content" style="display:none">
+        <div class="card">
+            <div class="card-header">
+                <h2>REST API Reference</h2>
+                <a class="btn btn-outline btn-sm" href="/static/swagger.json" target="_blank" download>Download OpenAPI</a>
+            </div>
+            <div class="card-body" style="padding:0">
+                <div id="swaggerContainer"><p class="text-muted" style="padding:2rem;text-align:center">Loading Swagger UI...</p></div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Footer -->
+<div class="footer">
+    <span>
+        PLC4X Manager v1.0 |
+        <a href="https://github.com/silviogarbes/plc4x-manager" target="_blank">GitHub</a> |
+        <a href="//:3000" id="grafanaLink" target="_blank">Grafana</a> |
+        <a href="//:8086" id="influxLink" target="_blank">InfluxDB</a> |
+        Apache License 2.0
+    </span>
+    <span>Created by Silvio Garbes | Powered by Apache PLC4X</span>
+</div>
+<script>
+    // Fix external service links to use current hostname
+    document.getElementById("grafanaLink").href = location.protocol + "//" + location.hostname + ":3000";
+    document.getElementById("influxLink").href = location.protocol + "//" + location.hostname + ":8086";
+</script>
+
+<!-- Modal: Add/Edit Device -->
+<div class="modal-overlay" id="deviceModal">
+    <div class="modal">
+        <h3 id="deviceModalTitle">Add Device</h3>
+
+        <div class="form-row">
+            <div class="form-group">
+                <label>Plant / Site <span class="help-icon" tabindex="0">?<span class="tooltip-text">Factory or site name. Used to group devices in Grafana dashboards. Example: SP-Factory1, RJ-Plant2</span></span></label>
+                <input type="text" id="devicePlant" placeholder="SP-Factory1">
+            </div>
+            <div class="form-group">
+                <label>Name <span class="help-icon" tabindex="0">?<span class="tooltip-text">Unique device identifier. No spaces allowed. Example: SiemensLine1</span></span></label>
+                <input type="text" id="deviceName" placeholder="SiemensLine1">
+            </div>
+            <div class="form-group">
+                <label>Protocol <span class="help-icon" tabindex="0">?<span class="tooltip-text">Select a PLC protocol to auto-fill the connection string and example tags.</span></span></label>
+                <select id="deviceProtocol" onchange="onProtocolChange()">
+                    <option value="">Select...</option>
+                </select>
+            </div>
+        </div>
+
+        <div class="form-group">
+            <label>Connection String <span class="help-icon" tabindex="0">?<span class="tooltip-text">Full connection URI including protocol, IP, and port. Select a protocol above for examples.</span></span></label>
+            <div style="display:flex;gap:8px;align-items:center">
+                <input type="text" id="deviceConn" placeholder="s7://192.168.1.10" style="flex:1">
+                <button class="btn btn-outline btn-sm" style="white-space:nowrap" onclick="testConnection(event)">Test Connection</button>
+            </div>
+            <span class="field-hint">Format: protocol://ip:port (e.g., s7://192.168.1.10)</span>
+        </div>
+
+        <div style="display:flex;gap:16px;align-items:center;margin-top:12px;flex-wrap:wrap">
+            <div style="display:flex;align-items:center;gap:6px">
+                <label style="margin:0;font-size:0.85rem;display:flex;align-items:center;gap:4px"><span style="white-space:nowrap">Poll Interval</span> <span class="help-icon" tabindex="0">?<span class="tooltip-text">How often to read tags from this device (seconds). Lower = more data but more load. Default: 5.</span></span></label>
+                <input type="number" id="devicePollInterval" min="1" max="3600" value="5" style="width:70px">
+                <span class="text-muted" style="font-size:0.78rem">sec</span>
+            </div>
+            <label style="display:flex;align-items:center;gap:6px;cursor:pointer;margin:0;font-size:0.85rem">
+                <input type="checkbox" id="deviceAllowWrite">
+                <span style="white-space:nowrap">Allow Write</span>
+                <span class="help-icon" tabindex="0">?<span class="tooltip-text">When enabled, the Write button appears on Live Data tags. Disabled by default for safety.</span></span>
+            </label>
+        </div>
+
+        <h4 class="section-label" style="margin-top:16px">PLC Tags <span class="help-icon" tabindex="0">?<span class="tooltip-text">Tags read directly from the PLC memory. Each tag needs an alias (display name) and a PLC address. For virtual tags (manual input, product code, etc.), use address VIRTUAL — the value is set via API or HMI, not read from PLC.</span></span></h4>
+        <div id="tagEditor"></div>
+        <div style="display:flex;gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap">
+            <button class="btn btn-outline btn-sm" onclick="addTagRow()">+ Add Tag</button>
+            <button class="btn btn-outline btn-sm" onclick="discoverTags(event)" title="Browse OPC-UA server and import tags automatically">Discover Tags</button>
+        </div>
+        <span class="field-hint">S7: %DB1:0:REAL | Modbus: holding-register:1 | OPC-UA: ns=2;i=10</span>
+
+        <h4 class="section-label" style="margin-top:20px">Calculated Tags <span class="help-icon" tabindex="0">?<span class="tooltip-text">Virtual tags computed from formulas. Use tag aliases above as variables in formulas.</span></span></h4>
+        <div id="calcTagEditor"></div>
+        <button class="btn btn-outline btn-sm" style="margin-top:8px" onclick="addCalcTagRow()">+ Add Calculated Tag</button>
+
+        <!-- Formula Reference (collapsible) -->
+        <details style="margin-top:12px">
+            <summary style="cursor:pointer;font-size:12px;color:var(--primary,#c8102e);font-weight:500">Formula Reference & Simulator</summary>
+            <div style="margin-top:8px;padding:12px;background:var(--bg);border-radius:8px;border:1px solid var(--border);font-size:12px">
+                <table class="table" style="margin-bottom:12px">
+                    <thead><tr><th>Category</th><th>Syntax</th><th>Example</th></tr></thead>
+                    <tbody>
+                        <tr><td>Arithmetic</td><td><code>+ - * / % **</code></td><td><code>Temp1 + Temp2</code></td></tr>
+                        <tr><td>Average</td><td><code>avg(a, b, ...)</code></td><td><code>avg(Sensor1, Sensor2, Sensor3)</code></td></tr>
+                        <tr><td>Sum</td><td><code>sum(a, b, ...)</code></td><td><code>sum(Line1, Line2, Line3)</code></td></tr>
+                        <tr><td>Min / Max</td><td><code>min(a, b) max(a, b)</code></td><td><code>max(TempA, TempB)</code></td></tr>
+                        <tr><td>Absolute</td><td><code>abs(x)</code></td><td><code>abs(Target - Actual)</code></td></tr>
+                        <tr><td>Rounding</td><td><code>round(x) ceil(x) floor(x)</code></td><td><code>round(Pressure * 100) / 100</code></td></tr>
+                        <tr><td>Square root</td><td><code>sqrt(x)</code></td><td><code>sqrt(X**2 + Y**2)</code></td></tr>
+                        <tr><td>Logarithm</td><td><code>log(x) log10(x)</code></td><td><code>log10(Signal)</code></td></tr>
+                        <tr><td>Power</td><td><code>pow(x, y)</code> or <code>x ** y</code></td><td><code>pow(Radius, 2) * 3.14159</code></td></tr>
+                        <tr><td>Type convert</td><td><code>int(x) float(x)</code></td><td><code>int(RawValue / 10)</code></td></tr>
+                        <tr><td>Comparison</td><td><code>> < >= <= == !=</code></td><td><code>Temp > 100</code> (returns 1 or 0)</td></tr>
+                    </tbody>
+                </table>
+
+                <div style="font-weight:600;margin-bottom:8px;color:var(--text)">Formula Simulator</div>
+                <div class="form-row" style="gap:8px;margin-bottom:8px">
+                    <div class="form-group" style="margin-bottom:0">
+                        <input type="text" id="formulaTestExpr" placeholder="Formula (e.g.: (a + b) / 2)" style="font-family:monospace;font-size:12px">
+                    </div>
+                    <div class="form-group" style="margin-bottom:0">
+                        <input type="text" id="formulaTestVars" placeholder='Variables as JSON: {"a": 10, "b": 20}' style="font-family:monospace;font-size:12px">
+                    </div>
+                </div>
+                <button class="btn btn-primary btn-sm" onclick="testFormula()">Test Formula</button>
+                <div id="formulaTestResult" style="margin-top:8px;font-family:monospace;font-size:13px"></div>
+            </div>
+        </details>
+
+        <div class="modal-actions">
+            <button class="btn btn-outline" onclick="closeModal('deviceModal')">Cancel</button>
+            <button class="btn btn-primary" id="deviceSaveBtn" onclick="saveDevice()">Save</button>
+        </div>
+    </div>
+</div>
+
+<!-- Modal: Add/Edit User -->
+<div class="modal-overlay" id="userModal">
+    <div class="modal">
+        <h3 id="userModalTitle">Add User</h3>
+
+        <div class="form-group">
+            <label>Username <span class="help-icon" tabindex="0">?<span class="tooltip-text">OPC-UA login username for SCADA/HMI connections.</span></span></label>
+            <input type="text" id="userName" placeholder="operator1">
+        </div>
+
+        <div class="form-group">
+            <label id="userPasswordLabel">Password <span class="help-icon" tabindex="0">?<span class="tooltip-text">Password for OPC-UA authentication. Required for new users.</span></span></label>
+            <input type="password" id="userPassword" placeholder="Enter password">
+        </div>
+
+        <div class="form-group">
+            <label>Security Group <span class="help-icon" tabindex="0">?<span class="tooltip-text">admin-group = read/write access. user-group = read only access.</span></span></label>
+            <select id="userSecurity">
+                <option value="admin-group">admin-group (full access)</option>
+                <option value="user-group">user-group (read only)</option>
+            </select>
+        </div>
+
+        <div class="modal-actions">
+            <button class="btn btn-outline" onclick="closeModal('userModal')">Cancel</button>
+            <button class="btn btn-primary" onclick="saveUser()">Save</button>
+        </div>
+    </div>
+</div>
+
+<!-- Modal: Configuration Diff -->
+<div class="modal-overlay" id="diffModal">
+    <div class="modal diff-modal">
+        <h3>Configuration Diff</h3>
+        <div class="diff-container" id="diffContent">Loading...</div>
+        <div class="modal-actions">
+            <button class="btn btn-outline" onclick="closeModal('diffModal')">Close</button>
+        </div>
+    </div>
+</div>
+
+<!-- PLC4X Version Update Overlay -->
+<div id="versionUpdateOverlay" class="modal-overlay" style="z-index:300;flex-direction:column;align-items:center;justify-content:center;padding:1rem">
+    <div style="background:var(--bg-elevated);border:1px solid var(--border-active);border-radius:var(--radius);box-shadow:var(--shadow-elevated);padding:2rem 2.5rem;max-width:480px;width:90%;text-align:center">
+        <div id="versionOverlayIcon" style="font-size:2rem;margin-bottom:1rem">&#9881;</div>
+        <h3 id="versionOverlayTitle" style="margin:0 0 0.5rem">Updating PLC4X...</h3>
+        <p id="versionOverlayText" style="color:var(--text-muted);margin:0 0 1.2rem;font-size:0.9rem">Downloading jar from Maven Central</p>
+        <div style="background:var(--bg-card);border-radius:6px;overflow:hidden;height:8px;margin-bottom:1rem">
+            <div id="versionProgressBar" style="height:100%;width:0%;background:var(--primary);border-radius:6px;transition:width 0.5s ease"></div>
+        </div>
+        <p id="versionOverlayStep" style="color:var(--text-muted);margin:0;font-size:0.8rem">Step 1 of 4</p>
+    </div>
+</div>
+
+<!-- Toast Container -->
+<div id="toastContainer"></div>
+
+<script src="/static/js/app.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/konva@9/konva.min.js"></script>
+<script src="/static/js/hmi.js"></script>
+</body>
+</html>

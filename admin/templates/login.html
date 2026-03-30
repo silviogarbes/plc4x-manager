@@ -1,0 +1,292 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PLC4X Manager - Login</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@500;700&display=swap" rel="stylesheet">
+    <style>
+        *, *::before, *::after {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            background: #eef0f2;
+            font-family: 'IBM Plex Sans', sans-serif;
+            color: #1b1f24;
+            overflow: hidden;
+        }
+
+        /* Subtle dot pattern background */
+        body::before {
+            content: '';
+            position: fixed;
+            inset: 0;
+            background-image: radial-gradient(circle, #d4d8de 1px, transparent 1px);
+            background-size: 24px 24px;
+            opacity: 0.5;
+            pointer-events: none;
+            z-index: 0;
+        }
+
+        .login-card {
+            position: relative;
+            z-index: 1;
+            background: #ffffff;
+            border: 1px solid #d4d8de;
+            border-radius: 8px;
+            padding: 44px 36px 36px;
+            width: 100%;
+            max-width: 400px;
+            box-shadow:
+                0 1px 3px rgba(0, 0, 0, 0.06),
+                0 8px 24px rgba(0, 0, 0, 0.08);
+            overflow: hidden;
+        }
+
+        .login-card::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 4px;
+            background: #c8102e;
+        }
+
+        .login-header {
+            text-align: center;
+            margin-bottom: 32px;
+        }
+
+        .login-header h1 {
+            font-family: 'IBM Plex Mono', monospace;
+            font-size: 26px;
+            font-weight: 700;
+            color: #1b1f24;
+            letter-spacing: -0.5px;
+            margin-bottom: 6px;
+        }
+
+        .login-header h1 span {
+            color: #c8102e;
+        }
+
+        .login-header .subtitle {
+            font-size: 11px;
+            font-weight: 600;
+            color: #7c8490;
+            letter-spacing: 1.5px;
+            text-transform: uppercase;
+        }
+
+        .login-error {
+            background: #fdeaed;
+            color: #c8102e;
+            border: 1px solid rgba(220, 53, 69, 0.25);
+            padding: 12px 16px;
+            border-radius: 8px;
+            font-size: 13px;
+            font-weight: 500;
+            margin-bottom: 20px;
+            display: none;
+            text-align: center;
+        }
+
+        .form-group {
+            margin-bottom: 20px;
+        }
+
+        .form-group label {
+            display: block;
+            font-size: 12px;
+            font-weight: 600;
+            color: #4d5560;
+            margin-bottom: 6px;
+            letter-spacing: 0.3px;
+            text-transform: uppercase;
+        }
+
+        .form-group input {
+            width: 100%;
+            padding: 11px 14px;
+            background: #f5f6f8;
+            border: 1px solid #d4d8de;
+            border-radius: 6px;
+            color: #1b1f24;
+            font-family: 'IBM Plex Sans', sans-serif;
+            font-size: 14px;
+            outline: none;
+            transition: border-color 0.15s ease, box-shadow 0.15s ease;
+        }
+
+        .form-group input::placeholder {
+            color: #7c8490;
+        }
+
+        .form-group input:focus {
+            border-color: #c8102e;
+            box-shadow: 0 0 0 3px rgba(200, 16, 46, 0.15);
+        }
+
+        .btn-signin {
+            width: 100%;
+            padding: 12px 24px;
+            background: #c8102e;
+            color: #ffffff;
+            border: none;
+            border-radius: 6px;
+            font-family: 'IBM Plex Sans', sans-serif;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: background 0.15s ease, box-shadow 0.15s ease, transform 0.1s ease;
+            letter-spacing: 0.5px;
+            text-transform: uppercase;
+            margin-top: 8px;
+        }
+
+        .btn-signin:hover {
+            background: #a50d24;
+            box-shadow: 0 4px 16px rgba(200, 16, 46, 0.25);
+        }
+
+        .btn-signin:active {
+            transform: scale(0.98);
+        }
+
+        .btn-signin:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+
+        /* Spinning loader for submit button */
+        .btn-signin .spinner {
+            display: inline-block;
+            width: 16px;
+            height: 16px;
+            border: 2px solid rgba(255, 255, 255, 0.3);
+            border-top-color: #ffffff;
+            border-radius: 50%;
+            animation: spin 0.6s linear infinite;
+            vertical-align: middle;
+            margin-right: 8px;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body>
+    <div class="login-card">
+        <div class="login-header">
+            <h1>PLC4X <span>Manager</span></h1>
+            <p class="subtitle">Industrial OPC-UA Middleware</p>
+        </div>
+
+        <div class="login-error" id="loginError"></div>
+
+        <form id="loginForm" onsubmit="doLogin(event)">
+            <div class="form-group">
+                <label for="loginUser">Username</label>
+                <input type="text" id="loginUser" placeholder="Enter username" autocomplete="username" autofocus required>
+            </div>
+            <div class="form-group">
+                <label for="loginPass">Password</label>
+                <input type="password" id="loginPass" placeholder="Enter password" autocomplete="current-password" required>
+            </div>
+            <button type="submit" class="btn-signin" id="loginBtn">Sign In</button>
+        </form>
+    </div>
+
+    <p style="position:relative;z-index:1;text-align:center;margin-top:24px;font-size:12px;color:#8a9099;max-width:420px;line-height:1.6">
+        Web-based admin panel for managing Apache PLC4X OPC-UA Server.<br>
+        Configure devices, monitor live data, and control your OPC-UA gateway.<br>
+        <a href="https://github.com/silviogarbes/plc4x-manager" target="_blank" style="color:#c8102e;text-decoration:none;font-weight:500">github.com/silviogarbes/plc4x-manager</a>
+    </p>
+
+    <script>
+        // If already authenticated, redirect to main page
+        if (sessionStorage.getItem('jwt_token')) {
+            window.location.href = '/';
+        }
+
+        async function doLogin(e) {
+            e.preventDefault();
+
+            const errEl = document.getElementById('loginError');
+            const btn = document.getElementById('loginBtn');
+            const username = document.getElementById('loginUser').value.trim();
+            const password = document.getElementById('loginPass').value;
+
+            // Hide previous errors
+            errEl.style.display = 'none';
+
+            // Disable button and show loading state
+            btn.disabled = true;
+            btn.innerHTML = '<span class="spinner"></span>Signing in...';
+
+            try {
+                const res = await fetch('/api/auth/login', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ username, password })
+                });
+
+                let data;
+                try {
+                    data = await res.json();
+                } catch {
+                    data = {};
+                }
+
+                if (!res.ok) {
+                    errEl.textContent = data.error || data.detail || 'Invalid username or password.';
+                    errEl.style.display = 'block';
+                    // If locked out, disable the button for the lockout period
+                    if (data.locked && data.retryAfter) {
+                        btn.disabled = true;
+                        let secs = data.retryAfter;
+                        const countdown = setInterval(() => {
+                            secs--;
+                            btn.textContent = `Locked (${secs}s)`;
+                            if (secs <= 0) {
+                                clearInterval(countdown);
+                                btn.disabled = false;
+                                btn.textContent = 'Sign In';
+                                errEl.style.display = 'none';
+                            }
+                        }, 1000);
+                    }
+                    return;
+                }
+
+                // Store credentials and redirect
+                sessionStorage.setItem('jwt_token', data.token);
+                sessionStorage.setItem('jwt_user', data.username || username);
+                sessionStorage.setItem('jwt_role', data.role || 'admin');
+                if (data.plants) sessionStorage.setItem('jwt_plants', JSON.stringify(data.plants));
+                else sessionStorage.removeItem('jwt_plants');
+                window.location.href = '/';
+
+            } catch (err) {
+                errEl.textContent = 'Unable to reach the server. Please verify the service is running.';
+                errEl.style.display = 'block';
+            } finally {
+                btn.disabled = false;
+                btn.textContent = 'Sign In';
+            }
+        }
+    </script>
+</body>
+</html>

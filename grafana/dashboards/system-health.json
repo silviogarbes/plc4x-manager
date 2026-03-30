@@ -1,0 +1,71 @@
+{
+  "title": "PLC4X System Health",
+  "uid": "plc4x-system-health",
+  "tags": ["plc4x", "system"],
+  "timezone": "browser",
+  "refresh": "5s",
+  "time": {"from": "now-1h", "to": "now"},
+  "panels": [
+    {
+      "id": 1, "title": "MQTT Live Stream (real-time verification)",
+      "description": "Data coming directly from MQTT broker. If this shows data but InfluxDB panels don't, the problem is in the InfluxDB writer.",
+      "type": "timeseries",
+      "gridPos": {"h": 10, "w": 24, "x": 0, "y": 0},
+      "datasource": {"type": "grafana-mqtt-datasource", "uid": "MQTT-PLC4X"},
+      "targets": [
+        {"topic": "plc4x/+/+", "refId": "A"}
+      ],
+      "fieldConfig": {"defaults": {"custom": {"lineWidth": 2, "showPoints": "auto"}}}
+    },
+    {
+      "id": 2, "title": "InfluxDB Stored Data (verification)",
+      "description": "Data read from InfluxDB. Compare with MQTT panel above — should match with slight delay.",
+      "type": "timeseries",
+      "gridPos": {"h": 10, "w": 24, "x": 0, "y": 10},
+      "datasource": {"type": "influxdb", "uid": "InfluxDB-PLC4X"},
+      "targets": [{"datasource": {"type": "influxdb", "uid": "InfluxDB-PLC4X"}, "query": "from(bucket: \"plc4x_raw\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"plc4x_tags\")\n  |> filter(fn: (r) => r._field == \"value\")\n  |> aggregateWindow(every: v.windowPeriod, fn: mean, createEmpty: false)", "refId": "A"}],
+      "fieldConfig": {"defaults": {"custom": {"lineWidth": 2, "showPoints": "auto"}}}
+    },
+    {
+      "id": 3, "title": "MQTT Messages per Topic (live)", "type": "stat",
+      "description": "Number of MQTT messages received since dashboard load. If 0, the poller is not publishing.",
+      "gridPos": {"h": 6, "w": 12, "x": 0, "y": 20},
+      "datasource": {"type": "grafana-mqtt-datasource", "uid": "MQTT-PLC4X"},
+      "targets": [
+        {"topic": "plc4x/+/_status", "refId": "A"}
+      ],
+      "options": {"graphMode": "none", "textMode": "value_and_name"}
+    },
+    {
+      "id": 4, "title": "InfluxDB Write Rate (points/min)", "type": "stat",
+      "description": "How many data points InfluxDB received in the last minute.",
+      "gridPos": {"h": 6, "w": 12, "x": 12, "y": 20},
+      "datasource": {"type": "influxdb", "uid": "InfluxDB-PLC4X"},
+      "targets": [{"datasource": {"type": "influxdb", "uid": "InfluxDB-PLC4X"}, "query": "from(bucket: \"plc4x_raw\")\n  |> range(start: -1m)\n  |> filter(fn: (r) => r._measurement == \"plc4x_tags\")\n  |> group()\n  |> count()", "refId": "A"}],
+      "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"steps": [{"color": "red", "value": null}, {"color": "yellow", "value": 1}, {"color": "green", "value": 10}]}}}
+    },
+    {
+      "id": 5, "title": "Device Read Latency", "type": "timeseries",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 26},
+      "datasource": {"type": "influxdb", "uid": "InfluxDB-PLC4X"},
+      "targets": [{"datasource": {"type": "influxdb", "uid": "InfluxDB-PLC4X"}, "query": "from(bucket: \"plc4x_raw\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"plc4x_health\")\n  |> filter(fn: (r) => r._field == \"latency_ms\")\n  |> aggregateWindow(every: v.windowPeriod, fn: mean, createEmpty: false)", "refId": "A"}],
+      "fieldConfig": {"defaults": {"unit": "ms", "custom": {"lineWidth": 2, "fillOpacity": 10}, "thresholds": {"steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 500}, {"color": "red", "value": 2000}]}}}
+    },
+    {
+      "id": 6, "title": "Device Online/Offline History", "type": "state-timeline",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 26},
+      "datasource": {"type": "influxdb", "uid": "InfluxDB-PLC4X"},
+      "targets": [{"datasource": {"type": "influxdb", "uid": "InfluxDB-PLC4X"}, "query": "from(bucket: \"plc4x_raw\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"plc4x_health\")\n  |> filter(fn: (r) => r._field == \"status\")\n  |> aggregateWindow(every: v.windowPeriod, fn: last, createEmpty: false)", "refId": "A"}],
+      "fieldConfig": {"defaults": {"mappings": [{"type": "value", "options": {"0": {"text": "Offline", "color": "red"}, "1": {"text": "Online", "color": "green"}}}], "custom": {"fillOpacity": 80}}}
+    },
+    {
+      "id": 7, "title": "InfluxDB Bucket Sizes", "type": "table",
+      "description": "Data stored in each retention bucket.",
+      "gridPos": {"h": 6, "w": 24, "x": 0, "y": 34},
+      "datasource": {"type": "influxdb", "uid": "InfluxDB-PLC4X"},
+      "targets": [
+        {"datasource": {"type": "influxdb", "uid": "InfluxDB-PLC4X"}, "query": "import \"array\"\nimport \"influxdata/influxdb/schema\"\n\nraw = from(bucket: \"plc4x_raw\") |> range(start: -24h) |> group() |> count() |> map(fn: (r) => ({_value: r._value, bucket: \"plc4x_raw (90d)\"}))\nhourly = from(bucket: \"plc4x_hourly\") |> range(start: -24h) |> group() |> count() |> map(fn: (r) => ({_value: r._value, bucket: \"plc4x_hourly (2y)\"}))\ndaily = from(bucket: \"plc4x_daily\") |> range(start: -24h) |> group() |> count() |> map(fn: (r) => ({_value: r._value, bucket: \"plc4x_daily (forever)\"}))\n\nunion(tables: [raw, hourly, daily])", "refId": "A"}
+      ]
+    }
+  ]
+}

@@ -1,0 +1,4106 @@
+"""
+PLC4X Manager - Web Admin
+Web panel for managing PLC4X OPC-UA middleware configuration.
+Licensed under Apache License 2.0.
+"""
+
+import os
+import hashlib
+import base64
+import secrets
+import datetime
+import difflib
+import hmac
+import re
+import tempfile
+import time
+import threading
+import random as _random
+import json as _json
+import yaml
+import jwt
+import docker
+from filelock import FileLock
+from flask import Flask, jsonify, request, render_template, g, make_response, has_request_context, Response
+from flask_limiter import Limiter
+from flask_limiter.util import get_remote_address
+
+app = Flask(__name__, static_folder="static", template_folder="templates")
+limiter = Limiter(get_remote_address, app=app, default_limits=[], storage_uri="memory://")
+
+# =============================================
+# Configuration from environment
+# =============================================
+
+CONFIG_PATH = os.environ.get("CONFIG_PATH", "/app/config/config.yml")
+PLC4X_CONTAINER = os.environ.get("PLC4X_CONTAINER", "plc4x-server")
+BACKUP_DIR = os.environ.get("BACKUP_DIR", "/app/config/backups")
+BACKUP_MAX_FILES = int(os.environ.get("BACKUP_MAX_FILES", "50"))
+SECURITY_DIR = os.environ.get("SECURITY_DIR", "/app/security")
+
+# Authentication settings
+ADMIN_USERNAME = os.environ.get("ADMIN_USERNAME", "admin")
+ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "admin")
+
+USERS = {}
+_users_env = os.environ.get("USERS_JSON", "")
+if _users_env:
+    try:
+        USERS = _json.loads(_users_env)
+    except Exception:
+        pass
+if not USERS:
+    USERS = {
+        ADMIN_USERNAME: {"password": ADMIN_PASSWORD, "role": "admin"},
+    }
+    op_user = os.environ.get("OPERATOR_USERNAME", "operator")
+    op_pass = os.environ.get("OPERATOR_PASSWORD", "operator")
+    if op_user:
+        USERS[op_user] = {"password": op_pass, "role": "operator"}
+    mon_user = os.environ.get("MONITOR_USERNAME", "monitor")
+    mon_pass = os.environ.get("MONITOR_PASSWORD", "monitor")
+    if mon_user:
+        USERS[mon_user] = {"password": mon_pass, "role": "monitor"}
+
+JWT_SECRET = os.environ.get("JWT_SECRET") or secrets.token_hex(32)
+JWT_EXPIRY_HOURS = int(os.environ.get("JWT_EXPIRY_HOURS", "24"))
+API_KEY = os.environ.get("API_KEY", "")
+
+PASSWORD_FILE = os.path.join(SECURITY_DIR, ".jibberish")
+KEYSTORE_FILE = os.path.join(SECURITY_DIR, "plc4x-opcuaserver.pfx")
+PKI_DIR = os.path.join(SECURITY_DIR, "pki")
+CONFIG_LOCK = FileLock("/tmp/plc4x_config.lock", timeout=10)
+PASSWORD_LOCK = FileLock("/tmp/plc4x_password.lock", timeout=10)
+AUDIT_TRAIL_PATH = os.path.join(os.environ.get("CONFIG_PATH", "/app/config/config.yml").rsplit("/", 1)[0], "audit-trail.jsonl")
+AUDIT_TRAIL_MAX_LINES = 50000
+AUDIT_TRAIL_MAX_DAYS = 365
+AUDIT_LOCK = FileLock("/tmp/plc4x_audit.lock", timeout=5)
+LOGBOOK_PATH = os.path.join(os.environ.get("CONFIG_PATH", "/app/config/config.yml").rsplit("/", 1)[0], "logbook.jsonl")
+LOGBOOK_LOCK = FileLock("/tmp/plc4x_logbook.lock", timeout=5)
+LOGBOOK_MAX_LINES = 50000
+LOGBOOK_MAX_DAYS = 365
+
+
+# ─── InfluxDB connection pool ──────────────────────────────────
+_influx_client = None
+_influx_client_lock = threading.Lock()
+
+# ─── Update/rollback concurrency lock ─────────────────────────
+_update_lock = threading.Lock()
+
+def _get_influx_client():
+    global _influx_client
+    if _influx_client is None:
+        with _influx_client_lock:
+            if _influx_client is None:
+                from influxdb_client import InfluxDBClient
+                url = os.environ.get("INFLUXDB_URL", "http://influxdb:8086")
+                token = os.environ.get("INFLUXDB_TOKEN", "plc4x-token")
+                org = os.environ.get("INFLUXDB_ORG", "plc4x")
+                _influx_client = InfluxDBClient(url=url, token=token, org=org, timeout=30_000, enable_gzip=True)
+    return _influx_client
+
+
+# ─── Tag history cache (avoid repeated identical queries) ──────
+_trend_cache = {}
+_trend_cache_lock = threading.Lock()
+_TREND_CACHE_TTL = 5  # seconds
+_TREND_CACHE_MAX = 100  # max cached queries
+
+def _trend_cache_get(key):
+    with _trend_cache_lock:
+        entry = _trend_cache.get(key)
+        if entry and (time.time() - entry[0]) < _TREND_CACHE_TTL:
+            return entry[1]
+        if entry:
+            del _trend_cache[key]
+    return None
+
+def _trend_cache_set(key, value):
+    with _trend_cache_lock:
+        if len(_trend_cache) >= _TREND_CACHE_MAX:
+            oldest_key = min(_trend_cache, key=lambda k: _trend_cache[k][0])
+            del _trend_cache[oldest_key]
+        _trend_cache[key] = (time.time(), value)
+
+
+# =============================================
+# Validation helpers
+# =============================================
+
+def safe_filename(filename):
+    """Validates filename to prevent path traversal. Returns True if safe."""
+    return bool(filename) and bool(re.match(r'^[a-zA-Z0-9._-]+$', filename))
+
+def validate_name(name):
+    """Validates device/tag/user names. Returns True if valid."""
+    return bool(name) and bool(re.match(r'^[a-zA-Z0-9._-]{1,128}$', name))
+
+
+def validate_tag_address(address, connection_string=""):
+    """Validates a PLC4X tag address. Returns (ok, error_message).
+
+    Checks protocol-specific rules to prevent the PLC4X server from
+    crashing on startup due to invalid addresses.
+    """
+    if not address or not isinstance(address, str):
+        return False, "Tag address cannot be empty"
+    address = address.strip()
+
+    # Modbus: holding-register, input-register, coil, discrete-input must have address >= 1
+    modbus_pattern = re.match(
+        r'^(holding-register|input-register|coil|discrete-input):(\d+)', address
+    )
+    if modbus_pattern:
+        reg_type = modbus_pattern.group(1)
+        reg_addr = int(modbus_pattern.group(2))
+        if reg_addr < 1:
+            return False, f"Modbus {reg_type} address must be >= 1 (got {reg_addr})"
+
+    # OPC-UA: PLC4X only supports ns=N;i=ID or ns=N;s=STRING format
+    conn_lower = connection_string.lower() if connection_string else ""
+    if "opcua" in conn_lower or address.startswith("ns=") or address.startswith("nsu="):
+        if address.startswith("nsu="):
+            return False, "PLC4X does not support 'nsu=' (namespace URI) format. Use 'ns=N;i=ID' or 'ns=N;s=NAME' instead"
+        if address.startswith("ns=") and not re.match(r'^ns=\d+;[isgb]=.+', address):
+            return False, "Invalid OPC-UA address format. Use 'ns=N;i=ID' or 'ns=N;s=NAME' (e.g., ns=2;i=10 or ns=2;s=MyVar)"
+
+    return True, None
+
+
+def validate_device_tags(device):
+    """Validates all tags in a device. Returns list of error strings (empty if ok)."""
+    errors = []
+    conn = device.get("connectionString", "")
+    for tag in device.get("tags", []):
+        alias = tag.get("alias", "unknown")
+        address = tag.get("address", "")
+        ok, msg = validate_tag_address(address, conn)
+        if not ok:
+            errors.append(f"Tag '{alias}': {msg}")
+    return errors
+
+
+# =============================================
+# Authentication
+# =============================================
+
+def create_jwt_token(username, role="admin", plants=None):
+    """Creates a JWT token for the given username."""
+    payload = {
+        "sub": username,
+        "role": role,
+        "iat": datetime.datetime.now(datetime.timezone.utc),
+        "exp": datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=JWT_EXPIRY_HOURS)
+    }
+    if plants:
+        payload["plants"] = plants
+    return jwt.encode(payload, JWT_SECRET, algorithm="HS256")
+
+
+def get_user_plants():
+    """Returns list of allowed plants for current user, or None if all allowed."""
+    plants = getattr(g, "plants", None)
+    return plants if plants else None
+
+
+def filter_by_plant(items, plant_key="plant"):
+    """Filters a list of dicts by the current user's allowed plants."""
+    allowed = get_user_plants()
+    if not allowed:
+        return items
+    return [item for item in items if item.get(plant_key) in allowed]
+
+
+def verify_jwt_token(token):
+    """Verifies a JWT token and returns the payload, or None if invalid."""
+    try:
+        return jwt.decode(token, JWT_SECRET, algorithms=["HS256"])
+    except (jwt.ExpiredSignatureError, jwt.InvalidTokenError):
+        return None
+
+
+def verify_basic_auth(auth_header):
+    """Verifies Basic Auth credentials. Returns (username, role, plants) or (None, None, None)."""
+    try:
+        scheme, credentials = auth_header.split(" ", 1)
+        if scheme.lower() != "basic":
+            return None, None, None
+        decoded = base64.b64decode(credentials).decode("utf-8")
+        username, password = decoded.split(":", 1)
+        # Check against USERS dict first (supports all roles and plants)
+        for uname, udata in USERS.items():
+            if hmac.compare_digest(username, uname) and hmac.compare_digest(password, udata.get("password", "")):
+                return uname, udata.get("role", "operator"), udata.get("plants")
+        # Fall back to legacy ADMIN_USERNAME/ADMIN_PASSWORD check
+        if hmac.compare_digest(username, ADMIN_USERNAME) and hmac.compare_digest(password, ADMIN_PASSWORD):
+            return username, "admin", None
+    except (ValueError, UnicodeDecodeError):
+        pass
+    return None, None, None
+
+
+def verify_api_key(key):
+    """Verifies an API key. Returns True if valid."""
+    return bool(API_KEY) and hmac.compare_digest(key, API_KEY)
+
+
+def require_admin(f):
+    """Decorator that restricts an endpoint to admin role only."""
+    from functools import wraps
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        if getattr(g, "role", "monitor") != "admin":
+            return jsonify({"error": "Admin access required"}), 403
+        return f(*args, **kwargs)
+    return decorated
+
+
+def require_operator(f):
+    """Decorator that restricts an endpoint to admin or operator (not monitor)."""
+    from functools import wraps
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        if getattr(g, "role", "monitor") not in ("admin", "operator"):
+            return jsonify({"error": "Operator access required"}), 403
+        return f(*args, **kwargs)
+    return decorated
+
+
+@app.before_request
+def authenticate():
+    """Authenticates all requests to /api/* endpoints.
+
+    Supports three authentication methods:
+    1. JWT Bearer token (Authorization: Bearer <token>)
+    2. HTTP Basic Auth (Authorization: Basic <base64>)
+    3. API Key (X-API-Key: <key>)
+
+    Public endpoints (no auth required):
+    - GET / (web UI)
+    - GET /login (login page)
+    - POST /api/auth/login (get JWT token)
+    - GET /static/* (CSS, JS assets)
+    """
+    # Public routes - no auth required
+    if request.path in ("/", "/login") or request.path.startswith("/static/"):
+        return None
+    if request.path == "/api/auth/login" and request.method == "POST":
+        return None
+
+    # Allow token via query parameter for file downloads
+    query_token = request.args.get("token", "")
+    if query_token and "/download" in request.path:
+        payload = verify_jwt_token(query_token)
+        if payload:
+            g.user = payload.get("sub")
+            g.role = payload.get("role", "monitor")
+            g.plants = payload.get("plants")
+            return None
+
+    # Check Authorization header
+    auth_header = request.headers.get("Authorization", "")
+
+    # Method 1: JWT Bearer token
+    if auth_header.lower().startswith("bearer "):
+        token = auth_header.split(" ", 1)[1]
+        payload = verify_jwt_token(token)
+        if payload:
+            g.user = payload.get("sub")
+            g.role = payload.get("role", "monitor")
+            g.plants = payload.get("plants")
+            return None
+        return jsonify({"error": "Invalid or expired token"}), 401
+
+    # Method 2: Basic Auth
+    if auth_header.lower().startswith("basic "):
+        username, role, plants = verify_basic_auth(auth_header)
+        if username:
+            g.user = username
+            g.role = role
+            g.plants = plants
+            return None
+        return jsonify({"error": "Invalid credentials"}), 401
+
+    # Method 3: API Key
+    api_key = request.headers.get("X-API-Key", "")
+    if api_key:
+        if verify_api_key(api_key):
+            g.user = "api-key"
+            g.role = "admin"
+            g.plants = None
+            return None
+        return jsonify({"error": "Invalid API key"}), 401
+
+    # No authentication provided
+    return jsonify({"error": "Authentication required"}), 401
+
+
+# =============================================
+# Audit Trail
+# =============================================
+
+def audit_log(action, details=None, user=None):
+    """Append a structured audit event to the audit trail file."""
+    entry = {
+        "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "user": user or (getattr(g, "user", "system") if has_request_context() else "system"),
+        "action": action,
+        "ip": request.remote_addr if has_request_context() else None,
+    }
+    if details:
+        entry["details"] = details
+    try:
+        with AUDIT_LOCK:
+            with open(AUDIT_TRAIL_PATH, "a", encoding="utf-8") as f:
+                f.write(_json.dumps(entry) + "\n")
+    except Exception:
+        pass
+
+
+# Endpoints that should NOT be audited (read-only, high-frequency, or auth-checked separately)
+_AUDIT_SKIP = {"/api/live/read", "/api/alarms", "/api/server/status", "/api/server/logs",
+               "/api/devices", "/api/backups", "/api/templates", "/api/security/status",
+               "/api/security/certificates/trusted", "/api/security/certificates/rejected",
+               "/api/users", "/api/hmi/config", "/api/services/status", "/api/plc4x/version",
+               "/api/plc4x/latest-version", "/api/manager/version", "/api/manager/check-update",
+               "/api/auth/verify", "/api/export/csv",
+               "/api/export/pdf", "/api/oee/calculate", "/api/oee/trend", "/api/audit",
+               "/api/live/write-log", "/api/data/query"}
+
+
+@app.after_request
+def audit_after_request(response):
+    """Automatically audit all successful write operations (POST/PUT/DELETE)."""
+    if request.method in ("POST", "PUT", "DELETE") and request.path.startswith("/api/"):
+        # Skip high-frequency or read-only endpoints
+        path = request.path.rstrip("/")
+        if path in _AUDIT_SKIP:
+            return response
+        # Skip failed requests
+        if response.status_code >= 400:
+            return response
+        # Build action name from method + path
+        action = f"{request.method} {path}"
+        details = None
+        try:
+            resp_data = response.get_json(silent=True)
+            if resp_data and isinstance(resp_data, dict):
+                msg = resp_data.get("message")
+                if msg:
+                    details = {"message": msg}
+                else:
+                    # Capture key identifiers from response (name, id, alias, etc.)
+                    summary = {}
+                    for key in ("name", "id", "alias", "key", "oeeConfig"):
+                        if key in resp_data:
+                            val = resp_data[key]
+                            summary[key] = val if isinstance(val, (str, int, float, bool)) else str(val)[:80]
+                    if summary:
+                        details = summary
+        except Exception:
+            pass
+        # Also capture key info from request body
+        if not details:
+            try:
+                req_data = request.get_json(silent=True)
+                if req_data and isinstance(req_data, dict):
+                    summary = {}
+                    for key in ("name", "device", "tag", "alias", "key", "enabled"):
+                        if key in req_data:
+                            summary[key] = req_data[key]
+                    if summary:
+                        details = summary
+            except Exception:
+                pass
+        audit_log(action, details)
+        # Periodically trim (1% chance per write request)
+        if _random.random() < 0.01:
+            _trim_audit_trail()
+    return response
+
+
+def _trim_jsonl_file(filepath, lock, max_lines, max_days):
+    """Trim a JSONL file by max lines and max age (days)."""
+    import json as _j
+    try:
+        cutoff = (datetime.datetime.utcnow() - datetime.timedelta(days=max_days)).isoformat()
+        with lock:
+            with open(filepath, "r", encoding="utf-8") as f:
+                lines = f.readlines()
+            if len(lines) <= max_lines:
+                # Only check time-based retention if under line cap
+                kept = []
+                for line in lines:
+                    try:
+                        entry = _j.loads(line)
+                        if entry.get("timestamp", "") >= cutoff:
+                            kept.append(line)
+                    except Exception:
+                        kept.append(line)
+                if len(kept) < len(lines):
+                    with open(filepath, "w", encoding="utf-8") as f:
+                        f.writelines(kept)
+            else:
+                # Over line cap — trim to max_lines, then apply time filter
+                recent = lines[-max_lines:]
+                kept = []
+                for line in recent:
+                    try:
+                        entry = _j.loads(line)
+                        if entry.get("timestamp", "") >= cutoff:
+                            kept.append(line)
+                    except Exception:
+                        kept.append(line)
+                with open(filepath, "w", encoding="utf-8") as f:
+                    f.writelines(kept)
+    except Exception:
+        pass
+
+
+def _trim_audit_trail():
+    _trim_jsonl_file(AUDIT_TRAIL_PATH, AUDIT_LOCK, AUDIT_TRAIL_MAX_LINES, AUDIT_TRAIL_MAX_DAYS)
+
+
+# =============================================
+# Routes - Authentication
+# =============================================
+
+@app.route("/login")
+def login_page():
+    """Serves the login page."""
+    return render_template("login.html")
+
+
+# Brute force protection: file-based tracking shared across workers
+LOGIN_MAX_ATTEMPTS = 5
+LOGIN_LOCKOUT_SECONDS = 300  # 5 minutes
+_LOGIN_FILE = "/tmp/plc4x_login_failures.yml"
+_LOGIN_LOCK = FileLock("/tmp/plc4x_login.lock", timeout=5)
+
+
+def _load_login_failures():
+    try:
+        with open(_LOGIN_FILE, "r") as f:
+            return yaml.safe_load(f) or {}
+    except FileNotFoundError:
+        return {}
+
+
+def _save_login_failures(data):
+    with open(_LOGIN_FILE, "w") as f:
+        yaml.dump(data, f)
+
+
+@app.route("/api/auth/login", methods=["POST"])
+@limiter.limit("30 per minute")
+def api_login():
+    """Authenticates and returns a JWT token.
+
+    Brute force protection: after 5 failed attempts, the IP is locked out
+    for 5 minutes. Rate limiting also applies (10 requests/minute).
+    """
+    client_ip = request.remote_addr or "unknown"
+    now = datetime.datetime.now(datetime.timezone.utc).timestamp()
+
+    with _LOGIN_LOCK:
+        failures = _load_login_failures()
+
+    # Check if IP is locked out
+    fail_info = failures.get(client_ip, {})
+    if fail_info.get("locked_until", 0) > now:
+        remaining = int(fail_info["locked_until"] - now)
+        return jsonify({
+            "error": f"Too many failed attempts. Try again in {remaining} seconds.",
+            "locked": True,
+            "retryAfter": remaining
+        }), 429
+
+    data = request.get_json()
+    if not data or "username" not in data or "password" not in data:
+        return jsonify({"error": "Fields 'username' and 'password' are required"}), 400
+
+    username = data["username"]
+    password = data["password"]
+
+    user_entry = USERS.get(username)
+    # Constant-time compare even when user not found (prevent timing oracle)
+    stored_pass = user_entry["password"] if user_entry else "dummy"
+    if user_entry and hmac.compare_digest(password, stored_pass):
+        # Successful login - clear failures
+        with _LOGIN_LOCK:
+            failures = _load_login_failures()
+            failures.pop(client_ip, None)
+            _save_login_failures(failures)
+        role = user_entry.get("role", "operator")
+        plants = user_entry.get("plants")  # list of allowed plants, or None for all
+        token = create_jwt_token(username, role, plants)
+        audit_log("login", {"status": "success", "role": role, "plants": plants}, user=username)
+        resp = {"token": token, "username": username, "role": role, "expiresIn": JWT_EXPIRY_HOURS * 3600}
+        if plants:
+            resp["plants"] = plants
+        return jsonify(resp)
+
+    # Failed login - track attempts (shared across workers via file)
+    with _LOGIN_LOCK:
+        failures = _load_login_failures()
+        if client_ip not in failures:
+            failures[client_ip] = {"count": 0, "locked_until": 0}
+        failures[client_ip]["count"] += 1
+        attempts = failures[client_ip]["count"]
+
+        if attempts >= LOGIN_MAX_ATTEMPTS:
+            failures[client_ip]["locked_until"] = now + LOGIN_LOCKOUT_SECONDS
+
+        _save_login_failures(failures)
+
+    if attempts >= LOGIN_MAX_ATTEMPTS:
+        return jsonify({
+            "error": f"Account locked for {LOGIN_LOCKOUT_SECONDS // 60} minutes after {LOGIN_MAX_ATTEMPTS} failed attempts.",
+            "locked": True,
+            "retryAfter": LOGIN_LOCKOUT_SECONDS
+        }), 429
+
+    remaining_attempts = LOGIN_MAX_ATTEMPTS - attempts
+    audit_log("login_failed", {"username": username, "attempts": attempts}, user=username)
+    return jsonify({
+        "error": f"Invalid credentials. {remaining_attempts} attempt(s) remaining before lockout."
+    }), 401
+
+
+@app.route("/api/auth/verify", methods=["GET"])
+def api_verify():
+    """Verifies the current authentication is valid.
+
+    Returns the authenticated username.
+    """
+    return jsonify({"username": g.get("user", "unknown"), "authenticated": True})
+
+
+@app.route("/api/auth/refresh", methods=["POST"])
+def api_refresh():
+    """Refreshes the current JWT token (issues a new one)."""
+    username = g.get("user")
+    if not username:
+        return jsonify({"error": "Not authenticated"}), 401
+    role = getattr(g, "role", "monitor")
+    plants = getattr(g, "plants", None)
+    token = create_jwt_token(username, role, plants)
+    return jsonify({
+        "token": token,
+        "username": username,
+        "role": role,
+        "expiresIn": JWT_EXPIRY_HOURS * 3600
+    })
+
+
+@app.route("/api/auth/password", methods=["PUT"])
+@require_admin
+def api_change_admin_password():
+    """Changes the admin panel password.
+
+    Writes the new credentials to a persistent file so they survive restarts.
+    The .env file is not writable from inside the container, so we store
+    the override in a config file that gets loaded at startup.
+    """
+    data = request.get_json()
+    if not data or "password" not in data:
+        return jsonify({"error": "Field 'password' is required"}), 400
+    new_password = data["password"]
+    if not new_password or len(new_password) < 4:
+        return jsonify({"error": "Password must be at least 4 characters"}), 400
+
+    # Store credentials override in a persistent file
+    creds_path = os.path.join(os.path.dirname(CONFIG_PATH), ".admin-credentials")
+    creds = {"username": ADMIN_USERNAME, "password": new_password}
+    _atomic_yaml_write(creds_path, creds)
+
+    # Update in-memory password for immediate effect
+    global ADMIN_PASSWORD
+    ADMIN_PASSWORD = new_password
+    if ADMIN_USERNAME in USERS:
+        USERS[ADMIN_USERNAME]["password"] = new_password
+
+    return jsonify({"message": "Admin password changed. You will need to log in again."})
+
+
+@app.route("/api/auth/info", methods=["GET"])
+def api_auth_info():
+    """Returns the current admin username (for UI display)."""
+    return jsonify({"username": ADMIN_USERNAME})
+
+
+# =============================================
+# Routes - Pages
+# =============================================
+
+@app.route("/")
+def index():
+    return render_template("index.html")
+
+
+# =============================================
+# Helpers - Config
+# =============================================
+
+def _atomic_yaml_write(filepath, data):
+    """Writes YAML data to a file atomically using tempfile + os.replace."""
+    dir_name = os.path.dirname(filepath)
+    os.makedirs(dir_name, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(dir=dir_name, suffix=".yml.tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            yaml.dump(data, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
+        os.replace(tmp_path, filepath)
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
+HMI_CONFIG_PATH = os.path.join(os.path.dirname(os.environ.get("CONFIG_PATH", "/app/config/config.yml")), "hmi-screens.json")
+HMI_IMAGES_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static", "hmi-images")
+HMI_ALLOWED_EXTENSIONS = {".png", ".jpg", ".jpeg", ".svg", ".gif", ".webp"}
+
+
+def load_hmi_config():
+    """Loads HMI config from hmi-screens.json. Returns default if not found."""
+    try:
+        with open(HMI_CONFIG_PATH, "r", encoding="utf-8") as f:
+            return _json.load(f)
+    except (FileNotFoundError, _json.JSONDecodeError):
+        return {"plants": []}
+
+
+def save_hmi_config(config):
+    """Saves HMI config to hmi-screens.json atomically."""
+    tmp = HMI_CONFIG_PATH + ".tmp"
+    os.makedirs(os.path.dirname(HMI_CONFIG_PATH), exist_ok=True)
+    with open(tmp, "w", encoding="utf-8") as f:
+        _json.dump(config, f, indent=2)
+    os.replace(tmp, HMI_CONFIG_PATH)
+
+
+def _find_plant(config, pid):
+    """Finds a plant by id. Returns (index, plant) or (None, None)."""
+    for i, plant in enumerate(config.get("plants", [])):
+        if plant.get("id") == pid:
+            return i, plant
+    return None, None
+
+
+def _find_area(config, aid):
+    """Finds an area by id across all plants. Returns (plant_index, area_index, area) or (None, None, None)."""
+    for pi, plant in enumerate(config.get("plants", [])):
+        for ai, area in enumerate(plant.get("areas", [])):
+            if area.get("id") == aid:
+                return pi, ai, area
+    return None, None, None
+
+
+def _find_equipment(config, eid):
+    """Finds equipment by id across all areas. Returns (pi, ai, ei, equip) or (None, None, None, None)."""
+    for pi, plant in enumerate(config.get("plants", [])):
+        for ai, area in enumerate(plant.get("areas", [])):
+            for ei, equip in enumerate(area.get("equipment", [])):
+                if equip.get("id") == eid:
+                    return pi, ai, ei, equip
+    return None, None, None, None
+
+
+def _safe_image_filename(filename):
+    """Returns a safe version of the filename for HMI image uploads."""
+    name, ext = os.path.splitext(filename)
+    # Sanitize: keep only alphanumeric, dash, underscore, dot
+    name = re.sub(r'[^a-zA-Z0-9._-]', '_', name)
+    name = name[:80]  # Limit length
+    return name + ext.lower()
+
+
+def _find_device(config, name):
+    """Finds a device by name in the config. Returns (index, device) or (None, None)."""
+    for i, device in enumerate(config.get("devices", [])):
+        if device["name"] == name:
+            return i, device
+    return None, None
+
+
+def load_config():
+    """Loads config from admin file (has calculatedTags), falls back to server config."""
+    for path in [CONFIG_PATH + ".admin", CONFIG_PATH]:
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                return yaml.safe_load(f)
+        except FileNotFoundError:
+            continue
+    return get_default_config()
+
+
+ADMIN_CONFIG_PATH = CONFIG_PATH + ".admin"
+
+
+def save_config(config):
+    """Saves configuration files.
+
+    Writes two files:
+    - config.yml: Clean config for PLC4X server (no calculatedTags)
+    - config.yml.admin: Full config with calculatedTags for admin panel
+
+    Callers must hold CONFIG_LOCK for read-modify-write operations.
+    """
+    import copy
+    os.makedirs(BACKUP_DIR, exist_ok=True)
+
+    # Backup the full admin config
+    if os.path.exists(ADMIN_CONFIG_PATH):
+        ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        backup_path = os.path.join(BACKUP_DIR, f"config_{ts}.yml")
+        with open(ADMIN_CONFIG_PATH, "r", encoding="utf-8") as src:
+            with open(backup_path, "w", encoding="utf-8") as dst:
+                dst.write(src.read())
+
+    # Save full config (with calculatedTags) for admin panel
+    _atomic_yaml_write(ADMIN_CONFIG_PATH, config)
+
+    # Save clean config for PLC4X server:
+    # - Strip calculatedTags (PLC4X doesn't know about them)
+    # - Strip disabled devices (enabled: false)
+    server_config = copy.deepcopy(config)
+    server_config["devices"] = [
+        d for d in server_config.get("devices", [])
+        if d.get("enabled", True) is not False
+    ]
+    for device in server_config["devices"]:
+        device.pop("calculatedTags", None)
+        device.pop("enabled", None)
+        device.pop("allowWrite", None)
+        device.pop("pollInterval", None)
+        device.pop("plant", None)
+        device.pop("oeeConfig", None)
+        # Strip admin-only fields from tags and remove virtual tags
+        device["tags"] = [t for t in device.get("tags", [])
+                         if not t.get("address", "").upper().startswith("VIRTUAL")]
+        for tag in device.get("tags", []):
+            tag.pop("alarmThresholds", None)
+    _atomic_yaml_write(CONFIG_PATH, server_config)
+
+    cleanup_old_backups()
+
+
+def cleanup_old_backups():
+    """Removes old backups keeping only the most recent BACKUP_MAX_FILES."""
+    if not os.path.exists(BACKUP_DIR):
+        return
+    files = sorted(
+        [f for f in os.listdir(BACKUP_DIR) if f.endswith(".yml")],
+        reverse=True
+    )
+    for old_file in files[BACKUP_MAX_FILES:]:
+        try:
+            os.remove(os.path.join(BACKUP_DIR, old_file))
+        except OSError:
+            pass
+
+
+def get_default_config():
+    """Returns a default configuration with no devices. Use Load Demo Devices to add examples."""
+    return {
+        "version": "0.8",
+        "dir": "/app/security",
+        "name": "Plc4xOPCUAServer",
+        "disableInsecureEndpoint": False,
+        "tcpPort": 12687,
+        "devices": []
+    }
+
+
+# =============================================
+# Helpers - Docker
+# =============================================
+
+_docker_client = None
+def get_docker_client():
+    """Returns a singleton Docker client."""
+    global _docker_client
+    if _docker_client is None:
+        _docker_client = docker.DockerClient(base_url="unix:///var/run/docker.sock")
+    return _docker_client
+
+
+def get_server_status():
+    """Checks the PLC4X Server container status."""
+    try:
+        client = get_docker_client()
+        container = client.containers.get(PLC4X_CONTAINER)
+        return {
+            "status": container.status,
+            "running": container.status == "running",
+            "id": container.short_id,
+            "image": container.image.tags[0] if container.image.tags else "unknown"
+        }
+    except docker.errors.NotFound:
+        return {"status": "not_found", "running": False, "id": None, "image": None}
+    except Exception as e:
+        return {"status": "error", "running": False, "id": None, "image": None, "error": str(e)}
+
+
+# =============================================
+# Helpers - Password / Users (.jibberish)
+# =============================================
+
+def load_password_config():
+    """Loads the password configuration from .jibberish file."""
+    try:
+        with open(PASSWORD_FILE, "r", encoding="utf-8") as f:
+            return yaml.safe_load(f)
+    except FileNotFoundError:
+        return None
+
+
+def save_password_config(pwd_config):
+    """Saves the password configuration to .jibberish file."""
+    _atomic_yaml_write(PASSWORD_FILE, pwd_config)
+
+
+def hash_password(plaintext, salt_bytes=None):
+    """Hashes a password using the PLC4X format: SHA-256(base64(salt) + ':' + password)."""
+    if salt_bytes is None:
+        salt_bytes = secrets.token_bytes(16)
+    salt_b64 = base64.b64encode(salt_bytes).decode("utf-8")
+    to_hash = f"{salt_b64}:{plaintext}"
+    hash_hex = hashlib.sha256(to_hash.encode("utf-8")).hexdigest()
+    return hash_hex, salt_b64, salt_bytes
+
+
+def jetty_obfuscate(password):
+    """Obfuscates a password using Jetty's OBF encoding (without the 'OBF:' prefix)."""
+    buf = []
+    for i, c in enumerate(password):
+        b1 = 127 + ord(c) + i
+        b2 = 127 + ord(c) - i
+        i1 = 0xff & (b1 >> 8)
+        i2 = 0xff & b1
+        i3 = 0xff & (b2 >> 8)
+        i4 = 0xff & b2
+        buf.append(f"{i1:04x}{i2:04x}{i3:04x}{i4:04x}")
+    return "".join(buf)
+
+
+def jetty_deobfuscate(obfuscated):
+    """Deobfuscates a Jetty OBF-encoded password (without the 'OBF:' prefix)."""
+    result = []
+    for i in range(0, len(obfuscated), 16):
+        chunk = obfuscated[i:i+16]
+        if len(chunk) < 16:
+            break
+        i0 = int(chunk[0:4], 16)
+        i1 = int(chunk[4:8], 16)
+        i2 = int(chunk[8:12], 16)
+        i3 = int(chunk[12:16], 16)
+        val1 = (i0 << 8) + i1
+        val2 = (i2 << 8) + i3
+        c = (val1 + val2 - 254) >> 1
+        result.append(chr(c))
+    return "".join(result)
+
+
+# =============================================
+# Helpers - PKI Certificates
+# =============================================
+
+def list_pki_certificates(subdir):
+    """Lists certificate files in a PKI subdirectory (trusted/rejected)."""
+    cert_dir = os.path.join(PKI_DIR, subdir)
+    if not os.path.exists(cert_dir):
+        return []
+    certs = []
+    for f in sorted(os.listdir(cert_dir)):
+        if f.endswith((".der", ".pem", ".crt", ".cer")):
+            filepath = os.path.join(cert_dir, f)
+            stat = os.stat(filepath)
+            certs.append({
+                "filename": f,
+                "size": stat.st_size,
+                "modified": stat.st_mtime
+            })
+    return certs
+
+
+# =============================================
+# Routes - REST API: Configuration
+# =============================================
+
+@app.route("/api/config", methods=["GET"])
+def api_get_config():
+    """Returns the current configuration."""
+    return jsonify(load_config())
+
+
+@app.route("/api/config", methods=["PUT"])
+@require_admin
+def api_save_config():
+    """Saves the complete configuration."""
+    config = request.get_json()
+    if not config:
+        return jsonify({"error": "Empty payload"}), 400
+    # Validate required config structure
+    if not isinstance(config.get("devices"), list):
+        return jsonify({"error": "Invalid config: 'devices' must be a list"}), 400
+    if "name" not in config or "tcpPort" not in config:
+        return jsonify({"error": "Invalid config: 'name' and 'tcpPort' are required"}), 400
+    all_errors = []
+    for dev in config.get("devices", []):
+        if not isinstance(dev, dict) or "name" not in dev or "connectionString" not in dev:
+            return jsonify({"error": "Invalid config: each device must have 'name' and 'connectionString'"}), 400
+        tag_errors = validate_device_tags(dev)
+        if tag_errors:
+            all_errors.extend([f"{dev['name']}: {e}" for e in tag_errors])
+    if all_errors:
+        return jsonify({"error": "Invalid tag addresses: " + "; ".join(all_errors[:5])}), 400
+    with CONFIG_LOCK:
+        save_config(config)
+    return jsonify({"message": "Configuration saved successfully"})
+
+
+@app.route("/api/config/server", methods=["PUT"])
+@require_admin
+def api_update_server_config():
+    """Updates the OPC-UA server settings (all config.yml fields)."""
+    data = request.get_json()
+    if not data:
+        return jsonify({"error": "Missing JSON body"}), 400
+    with CONFIG_LOCK:
+        config = load_config()
+        for key in ["version", "name", "tcpPort", "disableInsecureEndpoint", "dir"]:
+            if key in data:
+                config[key] = data[key]
+        save_config(config)
+    return jsonify({"message": "Server configuration updated"})
+
+
+# =============================================
+# Routes - REST API: Devices
+# =============================================
+
+@app.route("/api/devices", methods=["GET"])
+def api_list_devices():
+    """Lists all devices (filtered by user's allowed plants)."""
+    devices = load_config().get("devices", [])
+    return jsonify(filter_by_plant(devices))
+
+
+@app.route("/api/devices", methods=["POST"])
+@require_admin
+def api_add_device():
+    """Adds a new device."""
+    device = request.get_json()
+    if not device or "name" not in device or "connectionString" not in device:
+        return jsonify({"error": "Fields 'name' and 'connectionString' are required"}), 400
+
+    if not validate_name(device["name"]):
+        return jsonify({"error": "Invalid device name. Use only letters, numbers, dots, hyphens, underscores (max 128 chars)"}), 400
+
+    with CONFIG_LOCK:
+        config = load_config()
+        devices = config.get("devices", [])
+        if any(d["name"] == device["name"] for d in devices):
+            return jsonify({"error": f"Device '{device['name']}' already exists"}), 409
+
+        if "tags" not in device:
+            device["tags"] = []
+
+        # Validate all tag addresses
+        tag_errors = validate_device_tags(device)
+        if tag_errors:
+            return jsonify({"error": "Invalid tags: " + "; ".join(tag_errors)}), 400
+
+        devices.append(device)
+        config["devices"] = devices
+        save_config(config)
+    return jsonify({"message": f"Device '{device['name']}' added"}), 201
+
+
+@app.route("/api/devices/<name>", methods=["PUT"])
+@require_admin
+def api_update_device(name):
+    """Updates an existing device."""
+    data = request.get_json()
+    if not data or "name" not in data or "connectionString" not in data:
+        return jsonify({"error": "Fields 'name' and 'connectionString' are required"}), 400
+    if not validate_name(data["name"]):
+        return jsonify({"error": "Invalid device name"}), 400
+    with CONFIG_LOCK:
+        config = load_config()
+        i, _ = _find_device(config, name)
+        if i is None:
+            return jsonify({"error": f"Device '{name}' not found"}), 404
+
+        # Validate all tag addresses
+        tag_errors = validate_device_tags(data)
+        if tag_errors:
+            return jsonify({"error": "Invalid tags: " + "; ".join(tag_errors)}), 400
+
+        config["devices"][i] = data
+        save_config(config)
+    return jsonify({"message": f"Device '{name}' updated"})
+
+
+@app.route("/api/devices/<name>", methods=["DELETE"])
+@require_admin
+def api_delete_device(name):
+    """Removes a device."""
+    with CONFIG_LOCK:
+        config = load_config()
+        i, _ = _find_device(config, name)
+        if i is None:
+            return jsonify({"error": f"Device '{name}' not found"}), 404
+        config["devices"].pop(i)
+        save_config(config)
+    return jsonify({"message": f"Device '{name}' removed"})
+
+
+# =============================================
+# Routes - REST API: Tags
+# =============================================
+
+@app.route("/api/devices/<device_name>/tags", methods=["GET"])
+def api_list_tags(device_name):
+    """Lists tags for a device."""
+    allowed = getattr(g, "plants", None)
+    if allowed:
+        config = load_config()
+        device = config.get("devices", {}).get(device_name, {})
+        if device.get("plant") not in allowed:
+            return jsonify({"error": "Access denied"}), 403
+    config = load_config()
+    _, device = _find_device(config, device_name)
+    if device is None:
+        return jsonify({"error": f"Device '{device_name}' not found"}), 404
+    return jsonify(device.get("tags", []))
+
+
+@app.route("/api/devices/<device_name>/tags", methods=["POST"])
+@require_admin
+def api_add_tag(device_name):
+    """Adds a tag to a device."""
+    tag = request.get_json()
+    if not tag or "alias" not in tag or "address" not in tag:
+        return jsonify({"error": "Fields 'alias' and 'address' are required"}), 400
+
+    if not validate_name(tag["alias"]):
+        return jsonify({"error": "Invalid tag alias. Use only letters, numbers, dots, hyphens, underscores (max 128 chars)"}), 400
+
+    with CONFIG_LOCK:
+        config = load_config()
+        _, device = _find_device(config, device_name)
+        if device is None:
+            return jsonify({"error": f"Device '{device_name}' not found"}), 404
+
+        # Validate tag address
+        ok, msg = validate_tag_address(tag.get("address", ""), device.get("connectionString", ""))
+        if not ok:
+            return jsonify({"error": msg}), 400
+
+        tags = device.get("tags", [])
+        if any(t["alias"] == tag["alias"] for t in tags):
+            return jsonify({"error": f"Tag '{tag['alias']}' already exists"}), 409
+        tags.append(tag)
+        device["tags"] = tags
+        save_config(config)
+    return jsonify({"message": f"Tag '{tag['alias']}' added"}), 201
+
+
+@app.route("/api/devices/<device_name>/tags/<alias>", methods=["DELETE"])
+@require_admin
+def api_delete_tag(device_name, alias):
+    """Removes a tag from a device."""
+    with CONFIG_LOCK:
+        config = load_config()
+        _, device = _find_device(config, device_name)
+        if device is None:
+            return jsonify({"error": f"Device '{device_name}' not found"}), 404
+        tags = device.get("tags", [])
+        original_len = len(tags)
+        tags = [t for t in tags if t["alias"] != alias]
+        if len(tags) == original_len:
+            return jsonify({"error": f"Tag '{alias}' not found"}), 404
+        device["tags"] = tags
+        save_config(config)
+    return jsonify({"message": f"Tag '{alias}' removed"})
+
+
+def _validate_threshold_values(data):
+    """Extract and validate threshold values from a dict. Returns (thresholds, error_tuple_or_None)."""
+    import math
+    thresholds = {}
+    for key in ("warningHigh", "warningLow", "criticalHigh", "criticalLow"):
+        val = data.get(key)
+        if val is not None:
+            try:
+                thresholds[key] = float(val)
+                if not math.isfinite(thresholds[key]):
+                    return None, (jsonify({"error": f"Invalid value for '{key}': must be a finite number"}), 400)
+            except (ValueError, TypeError):
+                return None, (jsonify({"error": f"Invalid value for '{key}'"}), 400)
+    cl = thresholds.get("criticalLow")
+    wl = thresholds.get("warningLow")
+    wh = thresholds.get("warningHigh")
+    ch = thresholds.get("criticalHigh")
+    if cl is not None and wl is not None and cl > wl:
+        return None, (jsonify({"error": "Critical Low must be <= Warning Low"}), 400)
+    if wh is not None and ch is not None and wh > ch:
+        return None, (jsonify({"error": "Warning High must be <= Critical High"}), 400)
+    if wl is not None and wh is not None and wl > wh:
+        return None, (jsonify({"error": "Warning Low must be <= Warning High"}), 400)
+    return thresholds, None
+
+
+@app.route("/api/devices/<device_name>/tags/<alias>/alarms", methods=["PUT"])
+@require_admin
+def api_set_tag_alarms(device_name, alias):
+    """Sets alarm thresholds for a tag.
+
+    Simple (fixed thresholds):
+      {warningHigh, warningLow, criticalHigh, criticalLow}
+
+    Conditional (thresholds depend on another tag's value):
+      {
+        conditionDevice: "DeviceName",
+        conditionTag: "ProductCode",
+        profiles: [
+          {whenValue: 1, label: "Product A", warningLow: 20, warningHigh: 30, ...},
+          {whenValue: 2, label: "Product B", warningLow: 15, warningHigh: 25, ...}
+        ],
+        warningHigh, warningLow, criticalHigh, criticalLow  // default when no profile matches
+      }
+
+    Pass empty object {} to clear all.
+    """
+    data = request.get_json()
+    if data is None:
+        return jsonify({"error": "Request body is required"}), 400
+
+    with CONFIG_LOCK:
+        config = load_config()
+        _, device = _find_device(config, device_name)
+        if device is None:
+            return jsonify({"error": f"Device '{device_name}' not found"}), 404
+        tag = next((t for t in device.get("tags", []) if t["alias"] == alias), None)
+        if not tag:
+            return jsonify({"error": f"Tag '{alias}' not found"}), 404
+
+        # Validate default thresholds
+        thresholds, err = _validate_threshold_values(data)
+        if err:
+            return err
+
+        # Handle conditional profiles
+        condition_device = data.get("conditionDevice")
+        condition_tag = data.get("conditionTag")
+        profiles = data.get("profiles")
+
+        if profiles is not None:
+            if not isinstance(profiles, list):
+                return jsonify({"error": "'profiles' must be an array"}), 400
+            validated_profiles = []
+            for i, p in enumerate(profiles):
+                if "whenValue" not in p:
+                    return jsonify({"error": f"Profile {i+1}: 'whenValue' is required"}), 400
+                if not isinstance(p["whenValue"], (str, int, float)):
+                    return jsonify({"error": f"Profile {i+1}: 'whenValue' must be a string or number"}), 400
+                p_thresholds, p_err = _validate_threshold_values(p)
+                if p_err:
+                    return p_err
+                entry = {"whenValue": p["whenValue"]}
+                if p.get("label"):
+                    entry["label"] = str(p["label"])
+                entry.update(p_thresholds)
+                validated_profiles.append(entry)
+            if validated_profiles and not condition_tag:
+                return jsonify({"error": "Condition Tag is required when profiles are defined"}), 400
+            thresholds["profiles"] = validated_profiles
+            if condition_device:
+                thresholds["conditionDevice"] = str(condition_device)
+            if condition_tag:
+                thresholds["conditionTag"] = str(condition_tag)
+
+        if thresholds:
+            tag["alarmThresholds"] = thresholds
+        else:
+            tag.pop("alarmThresholds", None)
+
+        save_config(config)
+
+    return jsonify({"message": f"Alarm thresholds updated for '{alias}'", "alarmThresholds": thresholds})
+
+
+# =============================================
+# Routes - REST API: HMI
+# =============================================
+
+@app.route("/api/hmi/config", methods=["GET"])
+def api_hmi_get_config():
+    """Returns the full HMI configuration."""
+    return jsonify(load_hmi_config())
+
+
+@app.route("/api/hmi/config", methods=["PUT"])
+@require_admin
+def api_hmi_put_config():
+    """Saves the full HMI configuration (for auto-save from editor)."""
+    data = request.get_json()
+    if not isinstance(data, dict):
+        return jsonify({"error": "Invalid HMI config: expected a JSON object"}), 400
+    if not isinstance(data.get("plants", []), list):
+        return jsonify({"error": "Invalid HMI config: 'plants' must be a list"}), 400
+    save_hmi_config(data)
+    return jsonify({"message": "HMI config saved"})
+
+
+@app.route("/api/hmi/plants", methods=["POST"])
+@require_admin
+def api_hmi_create_plant():
+    """Creates a new plant."""
+    data = request.get_json()
+    if not data or not data.get("name", "").strip():
+        return jsonify({"error": "Field 'name' is required"}), 400
+    config = load_hmi_config()
+    plant = {
+        "id": f"plant-{int(time.time() * 1000)}",
+        "name": data["name"].strip(),
+        "areas": []
+    }
+    config.setdefault("plants", []).append(plant)
+    save_hmi_config(config)
+    return jsonify(plant), 201
+
+
+@app.route("/api/hmi/plants/<pid>", methods=["PUT"])
+@require_admin
+def api_hmi_update_plant(pid):
+    """Updates a plant's name."""
+    data = request.get_json()
+    if not data or not data.get("name", "").strip():
+        return jsonify({"error": "Field 'name' is required"}), 400
+    config = load_hmi_config()
+    i, plant = _find_plant(config, pid)
+    if plant is None:
+        return jsonify({"error": f"Plant '{pid}' not found"}), 404
+    config["plants"][i]["name"] = data["name"].strip()
+    save_hmi_config(config)
+    return jsonify(config["plants"][i])
+
+
+@app.route("/api/hmi/plants/<pid>", methods=["DELETE"])
+@require_admin
+def api_hmi_delete_plant(pid):
+    """Deletes a plant and all its children."""
+    config = load_hmi_config()
+    i, plant = _find_plant(config, pid)
+    if plant is None:
+        return jsonify({"error": f"Plant '{pid}' not found"}), 404
+    config["plants"].pop(i)
+    save_hmi_config(config)
+    return jsonify({"message": f"Plant '{pid}' deleted"})
+
+
+@app.route("/api/hmi/plants/<pid>/areas", methods=["POST"])
+@require_admin
+def api_hmi_create_area(pid):
+    """Creates a new area under a plant."""
+    data = request.get_json()
+    if not data or not data.get("name", "").strip():
+        return jsonify({"error": "Field 'name' is required"}), 400
+    config = load_hmi_config()
+    i, plant = _find_plant(config, pid)
+    if plant is None:
+        return jsonify({"error": f"Plant '{pid}' not found"}), 404
+    area = {
+        "id": f"area-{int(time.time() * 1000)}",
+        "name": data["name"].strip(),
+        "equipment": []
+    }
+    config["plants"][i].setdefault("areas", []).append(area)
+    save_hmi_config(config)
+    return jsonify(area), 201
+
+
+@app.route("/api/hmi/areas/<aid>", methods=["PUT"])
+@require_admin
+def api_hmi_update_area(aid):
+    """Updates an area's name."""
+    data = request.get_json()
+    if not data or not data.get("name", "").strip():
+        return jsonify({"error": "Field 'name' is required"}), 400
+    config = load_hmi_config()
+    pi, ai, area = _find_area(config, aid)
+    if area is None:
+        return jsonify({"error": f"Area '{aid}' not found"}), 404
+    config["plants"][pi]["areas"][ai]["name"] = data["name"].strip()
+    save_hmi_config(config)
+    return jsonify(config["plants"][pi]["areas"][ai])
+
+
+@app.route("/api/hmi/areas/<aid>", methods=["DELETE"])
+@require_admin
+def api_hmi_delete_area(aid):
+    """Deletes an area and all its children."""
+    config = load_hmi_config()
+    pi, ai, area = _find_area(config, aid)
+    if area is None:
+        return jsonify({"error": f"Area '{aid}' not found"}), 404
+    config["plants"][pi]["areas"].pop(ai)
+    save_hmi_config(config)
+    return jsonify({"message": f"Area '{aid}' deleted"})
+
+
+@app.route("/api/hmi/areas/<aid>/equipment", methods=["POST"])
+@require_admin
+def api_hmi_create_equipment(aid):
+    """Creates new equipment under an area."""
+    data = request.get_json()
+    if not data or not data.get("name", "").strip():
+        return jsonify({"error": "Field 'name' is required"}), 400
+    config = load_hmi_config()
+    pi, ai, area = _find_area(config, aid)
+    if area is None:
+        return jsonify({"error": f"Area '{aid}' not found"}), 404
+    equip = {
+        "id": f"equip-{int(time.time() * 1000)}",
+        "name": data["name"].strip(),
+        "device": data.get("device", ""),
+        "screen": {"elements": [], "backgroundImage": "", "width": 1280, "height": 720}
+    }
+    config["plants"][pi]["areas"][ai].setdefault("equipment", []).append(equip)
+    save_hmi_config(config)
+    return jsonify(equip), 201
+
+
+@app.route("/api/hmi/equipment/<eid>", methods=["PUT"])
+@require_admin
+def api_hmi_update_equipment(eid):
+    """Updates equipment name and/or device."""
+    data = request.get_json()
+    if not data:
+        return jsonify({"error": "Request body is required"}), 400
+    config = load_hmi_config()
+    pi, ai, ei, equip = _find_equipment(config, eid)
+    if equip is None:
+        return jsonify({"error": f"Equipment '{eid}' not found"}), 404
+    if "name" in data and data["name"].strip():
+        config["plants"][pi]["areas"][ai]["equipment"][ei]["name"] = data["name"].strip()
+    if "device" in data:
+        config["plants"][pi]["areas"][ai]["equipment"][ei]["device"] = data["device"]
+    save_hmi_config(config)
+    return jsonify(config["plants"][pi]["areas"][ai]["equipment"][ei])
+
+
+@app.route("/api/hmi/equipment/<eid>", methods=["DELETE"])
+@require_admin
+def api_hmi_delete_equipment(eid):
+    """Deletes equipment."""
+    config = load_hmi_config()
+    pi, ai, ei, equip = _find_equipment(config, eid)
+    if equip is None:
+        return jsonify({"error": f"Equipment '{eid}' not found"}), 404
+    config["plants"][pi]["areas"][ai]["equipment"].pop(ei)
+    save_hmi_config(config)
+    return jsonify({"message": f"Equipment '{eid}' deleted"})
+
+
+@app.route("/api/hmi/equipment/<eid>/screen", methods=["PUT"])
+@require_admin
+def api_hmi_save_screen(eid):
+    """Saves the screen configuration (elements array) for an equipment."""
+    data = request.get_json()
+    if not isinstance(data, dict):
+        return jsonify({"error": "Invalid screen config: expected a JSON object"}), 400
+    config = load_hmi_config()
+    pi, ai, ei, equip = _find_equipment(config, eid)
+    if equip is None:
+        return jsonify({"error": f"Equipment '{eid}' not found"}), 404
+    screen = config["plants"][pi]["areas"][ai]["equipment"][ei].setdefault("screen", {})
+    if "elements" in data:
+        screen["elements"] = data["elements"]
+    if "backgroundImage" in data:
+        screen["backgroundImage"] = data["backgroundImage"]
+    if "width" in data:
+        screen["width"] = data["width"]
+    if "height" in data:
+        screen["height"] = data["height"]
+    save_hmi_config(config)
+    return jsonify(config["plants"][pi]["areas"][ai]["equipment"][ei])
+
+
+@app.route("/api/hmi/upload-image", methods=["POST"])
+@require_admin
+def api_hmi_upload_image():
+    """Uploads a background image for HMI screens.
+
+    Accepts multipart/form-data with a 'file' field.
+    Saves to admin/static/hmi-images/ with a safe filename.
+    Returns: {"url": "/static/hmi-images/filename.ext"}
+    """
+    if "file" not in request.files:
+        return jsonify({"error": "No file uploaded"}), 400
+    file = request.files["file"]
+    if not file.filename:
+        return jsonify({"error": "No filename provided"}), 400
+    ext = os.path.splitext(file.filename)[1].lower()
+    if ext not in HMI_ALLOWED_EXTENSIONS:
+        allowed = ", ".join(sorted(HMI_ALLOWED_EXTENSIONS))
+        return jsonify({"error": f"File type not allowed. Allowed: {allowed}"}), 400
+    safe_name = _safe_image_filename(file.filename)
+    os.makedirs(HMI_IMAGES_DIR, exist_ok=True)
+    save_path = os.path.join(HMI_IMAGES_DIR, safe_name)
+    file.save(save_path)
+    return jsonify({"url": f"/static/hmi-images/{safe_name}"})
+
+
+@app.route("/api/hmi/load-demo", methods=["POST"])
+@require_admin
+def api_hmi_load_demo():
+    """Loads demo HMI config from hmi-demo.json and merges into existing config.
+
+    Does not overwrite existing plants — only adds plants from the demo
+    that do not already exist (matched by name).
+    """
+    demo_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "hmi-demo.json")
+    try:
+        with open(demo_path, "r", encoding="utf-8") as f:
+            demo = _json.load(f)
+    except FileNotFoundError:
+        return jsonify({"error": "hmi-demo.json not found"}), 404
+    except _json.JSONDecodeError as e:
+        return jsonify({"error": f"hmi-demo.json is invalid JSON: {e}"}), 500
+
+    config = load_hmi_config()
+    existing_names = {p["name"] for p in config.get("plants", [])}
+    added = 0
+    for plant in demo.get("plants", []):
+        if plant.get("name") not in existing_names:
+            config.setdefault("plants", []).append(plant)
+            existing_names.add(plant["name"])
+            added += 1
+    save_hmi_config(config)
+    return jsonify({"message": f"Demo loaded: {added} plant(s) added", "plantsAdded": added})
+
+
+# =============================================
+# Routes - REST API: Calculated Tags
+# =============================================
+
+@app.route("/api/devices/<device_name>/calculated", methods=["GET"])
+def api_list_calculated_tags(device_name):
+    """Lists calculated tags for a device."""
+    allowed = getattr(g, "plants", None)
+    if allowed:
+        config = load_config()
+        device = config.get("devices", {}).get(device_name, {})
+        if device.get("plant") not in allowed:
+            return jsonify({"error": "Access denied"}), 403
+    config = load_config()
+    _, device = _find_device(config, device_name)
+    if device is None:
+        return jsonify({"error": f"Device '{device_name}' not found"}), 404
+    return jsonify(device.get("calculatedTags", []))
+
+
+@app.route("/api/devices/<device_name>/calculated", methods=["POST"])
+@require_admin
+def api_add_calculated_tag(device_name):
+    """Adds a calculated tag to a device."""
+    data = request.get_json()
+    if not data or "alias" not in data or "formula" not in data:
+        return jsonify({"error": "Fields 'alias' and 'formula' are required"}), 400
+    if not validate_name(data["alias"]):
+        return jsonify({"error": "Invalid alias. Use only letters, numbers, dots, hyphens, underscores (max 128 chars)"}), 400
+
+    # Validate formula syntax
+    try:
+        ast.parse(data["formula"], mode="eval")
+    except SyntaxError:
+        return jsonify({"error": "Invalid formula syntax"}), 400
+
+    with CONFIG_LOCK:
+        config = load_config()
+        idx, device = _find_device(config, device_name)
+        if device is None:
+            return jsonify({"error": f"Device '{device_name}' not found"}), 404
+
+        calc_tags = device.get("calculatedTags", [])
+        # Check alias doesn't conflict with regular tags or other calculated tags
+        all_aliases = [t["alias"] for t in device.get("tags", [])] + [t["alias"] for t in calc_tags]
+        if data["alias"] in all_aliases:
+            return jsonify({"error": f"Alias '{data['alias']}' already exists (in tags or calculated tags)"}), 409
+
+        calc_tags.append({"alias": data["alias"], "formula": data["formula"]})
+        device["calculatedTags"] = calc_tags
+        config["devices"][idx] = device
+        save_config(config)
+
+    return jsonify({"message": f"Calculated tag '{data['alias']}' added"}), 201
+
+
+@app.route("/api/devices/<device_name>/calculated/<alias>", methods=["PUT"])
+@require_admin
+def api_update_calculated_tag(device_name, alias):
+    """Updates a calculated tag's formula."""
+    data = request.get_json()
+    if not data or "formula" not in data:
+        return jsonify({"error": "Field 'formula' is required"}), 400
+
+    try:
+        ast.parse(data["formula"], mode="eval")
+    except SyntaxError:
+        return jsonify({"error": "Invalid formula syntax"}), 400
+
+    with CONFIG_LOCK:
+        config = load_config()
+        idx, device = _find_device(config, device_name)
+        if device is None:
+            return jsonify({"error": f"Device '{device_name}' not found"}), 404
+
+        calc_tags = device.get("calculatedTags", [])
+        for ct in calc_tags:
+            if ct["alias"] == alias:
+                ct["formula"] = data["formula"]
+                device["calculatedTags"] = calc_tags
+                config["devices"][idx] = device
+                save_config(config)
+                return jsonify({"message": f"Calculated tag '{alias}' updated"})
+
+    return jsonify({"error": f"Calculated tag '{alias}' not found"}), 404
+
+
+@app.route("/api/devices/<device_name>/calculated/<alias>", methods=["DELETE"])
+@require_admin
+def api_delete_calculated_tag(device_name, alias):
+    """Removes a calculated tag from a device."""
+    with CONFIG_LOCK:
+        config = load_config()
+        idx, device = _find_device(config, device_name)
+        if device is None:
+            return jsonify({"error": f"Device '{device_name}' not found"}), 404
+
+        calc_tags = device.get("calculatedTags", [])
+        original_len = len(calc_tags)
+        calc_tags = [t for t in calc_tags if t["alias"] != alias]
+        if len(calc_tags) == original_len:
+            return jsonify({"error": f"Calculated tag '{alias}' not found"}), 404
+
+        device["calculatedTags"] = calc_tags
+        config["devices"][idx] = device
+        save_config(config)
+
+    return jsonify({"message": f"Calculated tag '{alias}' removed"})
+
+
+@app.route("/api/formula/validate", methods=["POST"])
+def api_validate_formula():
+    """Validates a formula and optionally evaluates it with test values."""
+    data = request.get_json()
+    if not data or "formula" not in data:
+        return jsonify({"error": "Field 'formula' is required"}), 400
+
+    formula = data["formula"]
+    test_values = data.get("testValues", {})
+
+    try:
+        ast.parse(formula, mode="eval")
+    except SyntaxError as e:
+        return jsonify({"valid": False, "error": f"Syntax error: {e.msg}"}), 200
+
+    if test_values:
+        result, error = evaluate_formula(formula, test_values)
+        return jsonify({"valid": True, "result": result, "error": error})
+
+    return jsonify({"valid": True})
+
+
+@app.route("/api/demo/load", methods=["POST"])
+@require_admin
+def api_load_demo_devices():
+    """Loads pre-configured demo/test devices from demo-devices.json."""
+    import json
+    demo_path = os.path.join(os.path.dirname(CONFIG_PATH), "demo-devices.json")
+    # Also check the app directory
+    if not os.path.exists(demo_path):
+        demo_path = "/app/demo-devices.json"
+    if not os.path.exists(demo_path):
+        return jsonify({"error": "Demo devices file not found"}), 404
+
+    with open(demo_path, "r", encoding="utf-8") as f:
+        demo_devices = json.load(f)
+
+    with CONFIG_LOCK:
+        config = load_config()
+        existing_names = {d["name"] for d in config.get("devices", [])}
+        added = []
+        skipped = []
+
+        for demo in demo_devices:
+            if demo["name"] in existing_names:
+                skipped.append(demo["name"])
+            else:
+                config.setdefault("devices", []).append(demo)
+                existing_names.add(demo["name"])
+                added.append(demo["name"])
+
+        if added:
+            save_config(config)
+
+    return jsonify({
+        "message": f"Added {len(added)} demo devices, skipped {len(skipped)} (already exist)",
+        "added": added,
+        "skipped": skipped
+    })
+
+
+# =============================================
+# Routes - REST API: Users
+# =============================================
+
+@app.route("/api/users", methods=["GET"])
+@require_admin
+def api_list_users():
+    """Lists all OPC-UA users (without password hashes)."""
+    pwd_config = load_password_config()
+    if not pwd_config or "users" not in pwd_config:
+        return jsonify([])
+    users = []
+    for username, user_data in pwd_config["users"].items():
+        users.append({
+            "username": username,
+            "security": user_data.get("security", ""),
+            "hasPassword": bool(user_data.get("password"))
+        })
+    return jsonify(users)
+
+
+@app.route("/api/users", methods=["POST"])
+@require_admin
+def api_add_user():
+    """Adds a new OPC-UA user."""
+    data = request.get_json()
+    if not data or "username" not in data or "password" not in data:
+        return jsonify({"error": "Fields 'username' and 'password' are required"}), 400
+
+    username = data["username"].strip()
+    password = data["password"]
+    security = data.get("security", "admin-group")
+
+    if not username:
+        return jsonify({"error": "Username cannot be empty"}), 400
+    if not password:
+        return jsonify({"error": "Password cannot be empty"}), 400
+
+    if not validate_name(username):
+        return jsonify({"error": "Invalid username. Use only letters, numbers, dots, hyphens, underscores (max 128 chars)"}), 400
+
+    with PASSWORD_LOCK:
+        pwd_config = load_password_config()
+        if not pwd_config:
+            return jsonify({"error": "Security not initialized. Start the server first."}), 503
+
+        if username in pwd_config.get("users", {}):
+            return jsonify({"error": f"User '{username}' already exists"}), 409
+
+        hash_hex, salt_b64, salt_bytes = hash_password(password)
+
+        if "users" not in pwd_config:
+            pwd_config["users"] = {}
+
+        pwd_config["users"][username] = {
+            "username": username,
+            "password": hash_hex,
+            "security": security,
+            "salt": list(salt_bytes)
+        }
+
+        save_password_config(pwd_config)
+    return jsonify({"message": f"User '{username}' added"}), 201
+
+
+@app.route("/api/users/<username>", methods=["PUT"])
+@require_admin
+def api_update_user(username):
+    """Updates an existing OPC-UA user (password and/or security group)."""
+    data = request.get_json()
+    if not data:
+        return jsonify({"error": "Missing JSON body"}), 400
+    with PASSWORD_LOCK:
+        pwd_config = load_password_config()
+        if not pwd_config or username not in pwd_config.get("users", {}):
+            return jsonify({"error": f"User '{username}' not found"}), 404
+
+        user = pwd_config["users"][username]
+        if "security" in data:
+            user["security"] = data["security"]
+        if "password" in data and data["password"]:
+            hash_hex, salt_b64, salt_bytes = hash_password(data["password"])
+            user["password"] = hash_hex
+            user["salt"] = list(salt_bytes)
+
+        pwd_config["users"][username] = user
+        save_password_config(pwd_config)
+    return jsonify({"message": f"User '{username}' updated"})
+
+
+@app.route("/api/users/<username>", methods=["DELETE"])
+@require_admin
+def api_delete_user(username):
+    """Removes an OPC-UA user."""
+    if username == ADMIN_USERNAME:
+        return jsonify({"error": "Cannot delete the default admin user"}), 403
+    with PASSWORD_LOCK:
+        pwd_config = load_password_config()
+        if not pwd_config or username not in pwd_config.get("users", {}):
+            return jsonify({"error": f"User '{username}' not found"}), 404
+
+        del pwd_config["users"][username]
+        save_password_config(pwd_config)
+    return jsonify({"message": f"User '{username}' removed"})
+
+
+# =============================================
+# Routes - REST API: Security
+# =============================================
+
+@app.route("/api/security/status", methods=["GET"])
+def api_security_status():
+    """Returns the security initialization status."""
+    pwd_exists = os.path.exists(PASSWORD_FILE)
+    ks_exists = os.path.exists(KEYSTORE_FILE)
+    pki_exists = os.path.exists(PKI_DIR)
+    result = {
+        "initialized": pwd_exists and ks_exists,
+        "passwordFile": pwd_exists,
+        "keystore": ks_exists,
+        "pkiDirectory": pki_exists
+    }
+    if ks_exists:
+        stat = os.stat(KEYSTORE_FILE)
+        result["keystoreSize"] = stat.st_size
+        result["keystoreModified"] = stat.st_mtime
+    return jsonify(result)
+
+
+@app.route("/api/security/password", methods=["PUT"])
+@require_admin
+def api_change_security_password():
+    """Changes the keystore security password."""
+    data = request.get_json()
+    if not data or "password" not in data:
+        return jsonify({"error": "Field 'password' is required"}), 400
+    new_password = data["password"]
+    if not new_password:
+        return jsonify({"error": "Password cannot be empty"}), 400
+
+    with PASSWORD_LOCK:
+        pwd_config = load_password_config()
+        if not pwd_config:
+            return jsonify({"error": "Security not initialized. Start the server first."}), 503
+
+        pwd_config["securityPassword"] = jetty_obfuscate(new_password)
+        save_password_config(pwd_config)
+    return jsonify({"message": "Security password updated. Restart the server to apply."})
+
+
+@app.route("/api/security/certificates/trusted", methods=["GET"])
+def api_trusted_certificates():
+    return jsonify(list_pki_certificates("trusted"))
+
+@app.route("/api/security/certificates/rejected", methods=["GET"])
+def api_rejected_certificates():
+    return jsonify(list_pki_certificates("rejected"))
+
+def _move_certificate(filename, from_subdir, to_subdir):
+    """Moves a certificate between PKI subdirectories."""
+    if not safe_filename(filename):
+        return jsonify({"error": "Invalid filename"}), 400
+    src = os.path.join(PKI_DIR, from_subdir, filename)
+    if not os.path.exists(src):
+        return jsonify({"error": f"Certificate '{filename}' not found in {from_subdir}"}), 404
+    dst_dir = os.path.join(PKI_DIR, to_subdir)
+    os.makedirs(dst_dir, exist_ok=True)
+    os.rename(src, os.path.join(dst_dir, filename))
+    return jsonify({"message": f"Certificate '{filename}' moved to {to_subdir}"})
+
+@app.route("/api/security/certificates/trust/<filename>", methods=["POST"])
+@require_admin
+def api_trust_certificate(filename):
+    return _move_certificate(filename, "rejected", "trusted")
+
+@app.route("/api/security/certificates/reject/<filename>", methods=["POST"])
+@require_admin
+def api_reject_certificate(filename):
+    return _move_certificate(filename, "trusted", "rejected")
+
+@app.route("/api/security/certificates/<filename>", methods=["DELETE"])
+@require_admin
+def api_delete_certificate(filename):
+    if not safe_filename(filename):
+        return jsonify({"error": "Invalid filename"}), 400
+    for subdir in ["trusted", "rejected"]:
+        path = os.path.join(PKI_DIR, subdir, filename)
+        if os.path.exists(path):
+            os.remove(path)
+            return jsonify({"message": f"Certificate '{filename}' deleted from {subdir}"})
+    return jsonify({"error": f"Certificate '{filename}' not found"}), 404
+
+
+# =============================================
+# Routes - REST API: Server Control
+# =============================================
+
+@app.route("/api/server/status", methods=["GET"])
+def api_server_status():
+    return jsonify(get_server_status())
+
+
+@app.route("/api/services/status", methods=["GET"])
+def api_services_status():
+    """Returns status of all services in the stack."""
+    import urllib.request
+
+    services = []
+
+    # PLC4X Server
+    srv = get_server_status()
+    services.append({
+        "name": "PLC4X OPC-UA Server",
+        "container": "plc4x-server",
+        "port": 12687,
+        "status": "online" if srv.get("running") else "offline",
+        "url": f"opc.tcp://<host>:12687/plc4x",
+        "description": "Reads PLCs and exposes tags as OPC-UA nodes"
+    })
+
+    # InfluxDB
+    try:
+        req = urllib.request.Request(
+            os.environ.get("INFLUXDB_URL", "http://influxdb:8086") + "/health",
+            headers={"User-Agent": "plc4x-manager"}
+        )
+        with urllib.request.urlopen(req, timeout=3) as resp:
+            influx_ok = resp.status == 200
+    except Exception:
+        influx_ok = False
+    services.append({
+        "name": "InfluxDB",
+        "container": "influxdb",
+        "port": 8086,
+        "status": "online" if influx_ok else "offline",
+        "url": "http://<host>:8086",
+        "description": "Time-series database for tag history (90d raw, 2y hourly, daily forever)"
+    })
+
+    # Grafana
+    try:
+        req = urllib.request.Request(
+            "http://grafana:3000/api/health",
+            headers={"User-Agent": "plc4x-manager"}
+        )
+        with urllib.request.urlopen(req, timeout=3) as resp:
+            grafana_ok = resp.status == 200
+    except Exception:
+        grafana_ok = False
+    services.append({
+        "name": "Grafana",
+        "container": "grafana",
+        "port": 3000,
+        "status": "online" if grafana_ok else "offline",
+        "url": "http://<host>:3000",
+        "description": "Dashboards: Overview, Device Detail, AI Predictions"
+    })
+
+    # Mosquitto (check via Docker)
+    mqtt_ok = False
+    try:
+        client = get_docker_client()
+        c = client.containers.get("mosquitto")
+        mqtt_ok = c.status == "running"
+    except Exception:
+        pass
+    services.append({
+        "name": "MQTT Broker (Mosquitto)",
+        "container": "mosquitto",
+        "port": 1883,
+        "status": "online" if mqtt_ok else "offline",
+        "url": "mqtt://<host>:1883",
+        "description": "Real-time tag publishing. Subscribe to plc4x/# for all tags"
+    })
+
+    # ML Predictor
+    ml_ok = False
+    try:
+        client = get_docker_client()
+        c = client.containers.get("plc4x-ml")
+        ml_ok = c.status == "running"
+    except Exception:
+        pass
+    services.append({
+        "name": "AI Predictions (Prophet + sklearn)",
+        "container": "plc4x-ml",
+        "port": None,
+        "status": "online" if ml_ok else "offline",
+        "url": None,
+        "description": "Forecast, anomaly detection, trend analysis. Results in Grafana"
+    })
+
+    return jsonify(services)
+
+@app.route("/api/server/restart", methods=["POST"])
+@require_admin
+def api_restart_server():
+    try:
+        client = get_docker_client()
+        container = client.containers.get(PLC4X_CONTAINER)
+        container.restart(timeout=10)
+        return jsonify({"message": "Server restarted successfully"})
+    except docker.errors.NotFound:
+        return jsonify({"error": "Server container not found"}), 404
+    except Exception:
+        return jsonify({"error": "Internal server error"}), 500
+
+@app.route("/api/server/logs", methods=["GET"])
+@require_operator
+def api_server_logs():
+    lines = request.args.get("lines", 50, type=int)
+    lines = min(lines, 5000)
+    try:
+        client = get_docker_client()
+        container = client.containers.get(PLC4X_CONTAINER)
+        logs = container.logs(tail=lines, timestamps=True).decode("utf-8", errors="replace")
+        return jsonify({"logs": logs})
+    except docker.errors.NotFound:
+        return jsonify({"error": "Container not found"}), 404
+    except Exception:
+        return jsonify({"error": "Internal server error"}), 500
+
+
+# =============================================
+# Routes - REST API: Backups
+# =============================================
+
+@app.route("/api/backups", methods=["GET"])
+@require_admin
+def api_list_backups():
+    """Lists backups with metadata. Diffs are computed only on demand via /api/backups/<file>/changes."""
+    if not os.path.exists(BACKUP_DIR):
+        return jsonify([])
+    files = sorted(
+        [f for f in os.listdir(BACKUP_DIR) if f.endswith(".yml")],
+        reverse=True
+    )
+    backups = []
+    for fname in files:
+        fpath = os.path.join(BACKUP_DIR, fname)
+        stat = os.stat(fpath)
+        backups.append({
+            "filename": fname,
+            "date": datetime.datetime.fromtimestamp(stat.st_mtime).strftime("%Y-%m-%d %H:%M:%S"),
+            "size": stat.st_size,
+        })
+    return jsonify(backups)
+
+
+@app.route("/api/backups/<filename>/changes", methods=["GET"])
+@require_admin
+def api_backup_changes(filename):
+    """Returns a summary of changes between this backup and the previous one."""
+    if not safe_filename(filename):
+        return jsonify({"error": "Invalid filename"}), 400
+    fpath = os.path.join(BACKUP_DIR, filename)
+    if not os.path.exists(fpath):
+        return jsonify({"error": "Backup not found"}), 404
+
+    # Find the previous backup (the one right before this one chronologically)
+    files = sorted([f for f in os.listdir(BACKUP_DIR) if f.endswith(".yml")])
+    idx = files.index(filename) if filename in files else -1
+    if idx <= 0:
+        return jsonify({"changes": [], "devices": 0, "tags": 0})
+
+    prev_file = os.path.join(BACKUP_DIR, files[idx - 1])
+    try:
+        with open(prev_file, "r", encoding="utf-8") as f:
+            prev_content = f.read()
+        with open(fpath, "r", encoding="utf-8") as f:
+            content = f.read()
+        parsed = yaml.safe_load(content) or {}
+        devices = parsed.get("devices", [])
+        tag_count = sum(len(d.get("tags", [])) for d in devices)
+
+        diff_lines = list(difflib.unified_diff(
+            prev_content.splitlines(), content.splitlines(), lineterm=""
+        ))
+        added = [l[1:] for l in diff_lines if l.startswith("+") and not l.startswith("+++")]
+        removed = [l[1:] for l in diff_lines if l.startswith("-") and not l.startswith("---")]
+        changes = _summarize_diff(added, removed) if (added or removed) else []
+        return jsonify({"changes": changes, "devices": len(devices), "tags": tag_count})
+    except Exception:
+        return jsonify({"changes": [], "devices": 0, "tags": 0})
+
+
+def _summarize_diff(added, removed):
+    """Creates a human-readable summary of YAML diff changes."""
+    changes = []
+    for line in removed:
+        line = line.strip()
+        if line and not line.startswith("#"):
+            if "name:" in line or "alias:" in line:
+                changes.append(f"Removed: {line}")
+            elif "connectionString:" in line:
+                changes.append(f"Removed connection: {line}")
+    for line in added:
+        line = line.strip()
+        if line and not line.startswith("#"):
+            if "name:" in line or "alias:" in line:
+                changes.append(f"Added: {line}")
+            elif "connectionString:" in line:
+                changes.append(f"Added connection: {line}")
+            elif "tcpPort:" in line or "disableInsecure" in line:
+                changes.append(f"Changed: {line}")
+    if not changes and (added or removed):
+        changes.append(f"{len(added)} lines added, {len(removed)} lines removed")
+    return changes[:10]  # Limit to 10 most relevant changes
+
+
+@app.route("/api/backups/<filename>/content", methods=["GET"])
+@require_admin
+def api_backup_content(filename):
+    """Returns the raw content of a backup file."""
+    if not safe_filename(filename):
+        return jsonify({"error": "Invalid filename"}), 400
+    backup_path = os.path.join(BACKUP_DIR, filename)
+    if not os.path.exists(backup_path):
+        return jsonify({"error": "Backup not found"}), 404
+    with open(backup_path, "r", encoding="utf-8") as f:
+        content = f.read()
+    return jsonify({"filename": filename, "content": content})
+
+
+@app.route("/api/backups/<filename>/download", methods=["GET"])
+@require_admin
+def api_backup_download(filename):
+    """Downloads a backup file as YAML attachment."""
+    if not safe_filename(filename):
+        return jsonify({"error": "Invalid filename"}), 400
+    backup_path = os.path.join(BACKUP_DIR, filename)
+    if not os.path.exists(backup_path):
+        return jsonify({"error": "Backup not found"}), 404
+    from flask import send_file
+    return send_file(backup_path, as_attachment=True, download_name=filename, mimetype="text/yaml")
+
+
+@app.route("/api/backups/<filename>/diff", methods=["GET"])
+@require_admin
+def api_backup_diff(filename):
+    """Returns a unified diff between a backup and the current config."""
+    if not safe_filename(filename):
+        return jsonify({"error": "Invalid filename"}), 400
+    backup_path = os.path.join(BACKUP_DIR, filename)
+    if not os.path.exists(backup_path):
+        return jsonify({"error": "Backup not found"}), 404
+    with open(backup_path, "r", encoding="utf-8") as f:
+        backup_lines = f.read().splitlines()
+    current_lines = []
+    if os.path.exists(CONFIG_PATH):
+        with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+            current_lines = f.read().splitlines()
+    diff = list(difflib.unified_diff(
+        backup_lines, current_lines,
+        fromfile=f"backup ({filename})",
+        tofile="current (config.yml)",
+        lineterm=""
+    ))
+    return jsonify({"filename": filename, "diff": "\n".join(diff)})
+
+@app.route("/api/backups/<filename>/restore", methods=["POST"])
+@require_admin
+def api_restore_backup(filename):
+    if not safe_filename(filename):
+        return jsonify({"error": "Invalid filename"}), 400
+    backup_path = os.path.join(BACKUP_DIR, filename)
+    if not os.path.exists(backup_path):
+        return jsonify({"error": "Backup not found"}), 404
+    with CONFIG_LOCK:
+        # Manually backup current config before restoring
+        if os.path.exists(CONFIG_PATH):
+            ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            bk_path = os.path.join(BACKUP_DIR, f"config_{ts}.yml")
+            os.makedirs(BACKUP_DIR, exist_ok=True)
+            with open(CONFIG_PATH, "r", encoding="utf-8") as src:
+                with open(bk_path, "w", encoding="utf-8") as dst:
+                    dst.write(src.read())
+        # Restore from backup
+        with open(backup_path, "r", encoding="utf-8") as f:
+            restored = yaml.safe_load(f)
+        save_config(restored)
+        cleanup_old_backups()
+    return jsonify({"message": f"Backup '{filename}' restored"})
+
+@app.route("/api/backups/cleanup", methods=["POST"])
+@require_admin
+def api_cleanup_backups():
+    cleanup_old_backups()
+    if not os.path.exists(BACKUP_DIR):
+        return jsonify({"message": "No backups to clean up", "remaining": 0})
+    remaining = len([f for f in os.listdir(BACKUP_DIR) if f.endswith(".yml")])
+    return jsonify({"message": f"Cleanup complete. Keeping last {BACKUP_MAX_FILES} backups.", "remaining": remaining})
+
+
+@app.route("/api/backups/create", methods=["POST"])
+@require_admin
+def api_create_backup():
+    """Creates a manual backup of the current configuration."""
+    with CONFIG_LOCK:
+        config = load_config()
+        os.makedirs(BACKUP_DIR, exist_ok=True)
+        ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        backup_path = os.path.join(BACKUP_DIR, f"config_{ts}.yml")
+        _atomic_yaml_write(backup_path, config)
+    return jsonify({"message": f"Backup created: config_{ts}.yml", "filename": f"config_{ts}.yml"})
+
+
+@app.route("/api/backups/upload", methods=["POST"])
+@require_admin
+def api_upload_restore():
+    """Restores configuration from an uploaded YAML file."""
+    if "file" not in request.files:
+        return jsonify({"error": "No file uploaded"}), 400
+
+    file = request.files["file"]
+    if not file.filename or not file.filename.endswith((".yml", ".yaml")):
+        return jsonify({"error": "File must be a .yml or .yaml file"}), 400
+
+    try:
+        content = file.read().decode("utf-8")
+        restored = yaml.safe_load(content)
+    except Exception:
+        return jsonify({"error": "Invalid YAML file"}), 400
+
+    if not isinstance(restored, dict):
+        return jsonify({"error": "Invalid config format: expected a YAML mapping"}), 400
+    if not isinstance(restored.get("devices"), list):
+        return jsonify({"error": "Invalid config: 'devices' must be a list"}), 400
+
+    with CONFIG_LOCK:
+        # Backup current config before restoring
+        config = load_config()
+        os.makedirs(BACKUP_DIR, exist_ok=True)
+        ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        backup_path = os.path.join(BACKUP_DIR, f"config_{ts}.yml")
+        _atomic_yaml_write(backup_path, config)
+
+        # Restore from uploaded file
+        save_config(restored)
+        cleanup_old_backups()
+
+    dev_count = len(restored.get("devices", []))
+    return jsonify({"message": f"Configuration restored from '{file.filename}' ({dev_count} devices)"})
+
+
+# =============================================
+# Routes - REST API: Live OPC-UA Data
+# =============================================
+
+@app.route("/api/live/read", methods=["GET"])
+@app.route("/api/live/read/<device_name>", methods=["GET"])
+def api_live_read(device_name=None):
+    """Returns live tag values from the background poller cache.
+
+    The poller reads OPC-UA tags continuously at configurable intervals
+    and stores results in a cache file. This endpoint returns cached data
+    instantly without connecting to OPC-UA.
+
+    Optional: pass a device name in the URL or ?device= to filter.
+    """
+    from poller import get_cache
+
+    device_filter = device_name or request.args.get("device")
+    data = get_cache()
+
+    # Apply calculated tags from admin config
+    config = load_config()
+    config_devices = {d["name"]: d for d in config.get("devices", [])}
+    for dev in data.get("devices", []):
+        cfg = config_devices.get(dev["name"])
+        if cfg:
+            dev["allowWrite"] = cfg.get("allowWrite", False)
+            dev["pollInterval"] = cfg.get("pollInterval", 5)
+            _process_calculated_tags(dev, cfg)
+
+    # Filter by user's allowed plants
+    data["devices"] = filter_by_plant(data.get("devices", []))
+
+    # Filter by device if requested
+    if device_filter:
+        filtered = [d for d in data.get("devices", []) if d["name"] == device_filter]
+        if not filtered:
+            data["error"] = f"Device '{device_filter}' not found"
+        data["devices"] = filtered
+
+    return jsonify(data)
+
+
+def _serialize_value(val):
+    """Converts OPC-UA values to JSON-serializable types."""
+    if val is None:
+        return None
+    if isinstance(val, (int, float, bool)):
+        return val
+    if isinstance(val, str):
+        # Only keep printable ASCII. Everything else becomes hex.
+        return "".join(
+            ch if 32 <= ord(ch) < 127 else f"[{ord(ch):02X}]"
+            for ch in val
+        )
+    if isinstance(val, bytes):
+        return val.hex()
+    if isinstance(val, (list, tuple)):
+        return [_serialize_value(v) for v in val]
+    return str(val)
+
+
+_WRITE_AUDIT_LOG = os.path.join(os.environ.get("CONFIG_PATH", "/app/config/config.yml").rsplit("/", 1)[0], "write-audit.log")
+
+@app.route("/api/live/write-log", methods=["GET"])
+@require_operator
+def api_write_log():
+    """Returns the write audit log."""
+    lines = request.args.get("lines", 100, type=int)
+    lines = min(lines, 1000)
+    try:
+        with open(_WRITE_AUDIT_LOG, "r", encoding="utf-8") as f:
+            all_lines = f.readlines()
+        return jsonify({"log": "".join(all_lines[-lines:]), "total": len(all_lines)})
+    except FileNotFoundError:
+        return jsonify({"log": "", "total": 0})
+
+
+# ─── Alarms API ────────────────────────────────────────────────────────
+
+@app.route("/api/alarms", methods=["GET"])
+def api_alarms():
+    """Returns active alarms and recent history (filtered by user's plants)."""
+    from poller import get_alarms
+    data = get_alarms()
+    allowed = get_user_plants()
+    if allowed:
+        data["active"] = {k: v for k, v in data.get("active", {}).items() if v.get("plant") in allowed}
+        data["history"] = [h for h in data.get("history", []) if h.get("plant") in allowed]
+    return jsonify(data)
+
+
+@app.route("/api/alarms/acknowledge", methods=["POST"])
+@require_operator
+def api_alarm_acknowledge():
+    """Acknowledges an active alarm (silences the sound). Body: {key: "device/tag"}"""
+    from poller import _alarm_lock, ALARM_PATH
+    import json as _json
+
+    data = request.get_json()
+    alarm_key = data.get("key") if data else None
+    if not alarm_key:
+        return jsonify({"error": "Field 'key' is required"}), 400
+
+    with _alarm_lock:
+        try:
+            with open(ALARM_PATH, "r", encoding="utf-8") as f:
+                disk_alarms = _json.load(f)
+        except Exception:
+            disk_alarms = {"active": {}, "history": []}
+
+        alarm = disk_alarms.get("active", {}).get(alarm_key)
+        if not alarm:
+            return jsonify({"error": f"Alarm '{alarm_key}' not found"}), 404
+
+        # Plant filter: check user is allowed to access this alarm's device
+        _ack_allowed = getattr(g, "plants", None)
+        if _ack_allowed and alarm.get("plant") not in _ack_allowed:
+            return jsonify({"error": "Access denied"}), 403
+
+        alarm["acknowledged"] = True
+
+        tmp = ALARM_PATH + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            _json.dump(disk_alarms, f)
+        os.replace(tmp, ALARM_PATH)
+
+    return jsonify({"message": f"Alarm '{alarm_key}' acknowledged"})
+
+
+@app.route("/api/alarms/acknowledge-all", methods=["POST"])
+@require_operator
+def api_alarm_acknowledge_all():
+    """Acknowledges all active alarms."""
+    from poller import _alarm_lock, ALARM_PATH
+    import json as _json
+
+    _ack_all_allowed = getattr(g, "plants", None)
+
+    with _alarm_lock:
+        try:
+            with open(ALARM_PATH, "r", encoding="utf-8") as f:
+                disk_alarms = _json.load(f)
+        except Exception:
+            disk_alarms = {"active": {}, "history": []}
+
+        count = 0
+        for alarm in disk_alarms.get("active", {}).values():
+            # Plant filter: only acknowledge alarms the user can access
+            if _ack_all_allowed and alarm.get("plant") not in _ack_all_allowed:
+                continue
+            if not alarm.get("acknowledged"):
+                alarm["acknowledged"] = True
+                count += 1
+
+        tmp = ALARM_PATH + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            _json.dump(disk_alarms, f)
+        os.replace(tmp, ALARM_PATH)
+
+    return jsonify({"message": f"{count} alarm(s) acknowledged"})
+
+
+# ─── Audit Trail API ───────────────────────────────────────────────────
+
+@app.route("/api/audit", methods=["GET"])
+@require_operator
+def api_audit_trail():
+    """Returns audit trail entries. Query params: lines (default 200), action (filter)."""
+    import json as _json
+    lines = request.args.get("lines", 200, type=int)
+    lines = max(1, min(lines, 5000))
+    action_filter = request.args.get("action")
+
+    try:
+        with open(AUDIT_TRAIL_PATH, "r", encoding="utf-8") as f:
+            all_lines = f.readlines()
+    except FileNotFoundError:
+        return jsonify({"entries": [], "total": 0})
+
+    entries = []
+    for line in reversed(all_lines):
+        try:
+            entry = _json.loads(line.strip())
+            if action_filter:
+                action = entry.get("action", "")
+                # Support both exact match and prefix match (e.g., "POST" matches "POST /api/...")
+                if action != action_filter and not action.startswith(action_filter + " "):
+                    continue
+            entries.append(entry)
+            if len(entries) >= lines:
+                break
+        except Exception:
+            continue
+
+    return jsonify({"entries": entries, "total": len(all_lines)})
+
+
+# ─── OEE (Overall Equipment Effectiveness) ─────────────────────────────
+
+@app.route("/api/devices/<device_name>/oee-config", methods=["GET"])
+def api_get_oee_config(device_name):
+    """Returns OEE configuration for a device."""
+    allowed = getattr(g, "plants", None)
+    if allowed:
+        config = load_config()
+        device = config.get("devices", {}).get(device_name, {})
+        if device.get("plant") not in allowed:
+            return jsonify({"error": "Access denied"}), 403
+    config = load_config()
+    _, device = _find_device(config, device_name)
+    if device is None:
+        return jsonify({"error": f"Device '{device_name}' not found"}), 404
+    return jsonify(device.get("oeeConfig", {}))
+
+
+@app.route("/api/devices/<device_name>/oee-config", methods=["PUT"])
+@require_admin
+def api_set_oee_config(device_name):
+    """Sets OEE configuration for a device.
+
+    Body: {enabled, runningTag, runningValue, productionCountTag,
+           rejectCountTag, idealCycleTime, plannedHoursPerDay}
+    """
+    data = request.get_json()
+    if data is None:
+        return jsonify({"error": "Request body is required"}), 400
+
+    with CONFIG_LOCK:
+        config = load_config()
+        idx, device = _find_device(config, device_name)
+        if device is None:
+            return jsonify({"error": f"Device '{device_name}' not found"}), 404
+
+        tag_aliases = [t["alias"] for t in device.get("tags", [])]
+        calc_aliases = [t["alias"] for t in device.get("calculatedTags", [])]
+        all_aliases = tag_aliases + calc_aliases
+
+        oee = {}
+        oee["enabled"] = bool(data.get("enabled", True))
+
+        for field in ("runningTag", "productionCountTag", "rejectCountTag"):
+            val = data.get(field)
+            if val:
+                if val not in all_aliases:
+                    return jsonify({"error": f"Tag '{val}' not found in device '{device_name}'"}), 400
+                try:
+                    _safe_flux_str(val)
+                except ValueError:
+                    return jsonify({"error": f"Tag alias '{val}' contains invalid characters"}), 400
+                oee[field] = val
+
+        if not oee.get("runningTag"):
+            return jsonify({"error": "'runningTag' is required"}), 400
+        if not oee.get("productionCountTag"):
+            return jsonify({"error": "'productionCountTag' is required"}), 400
+
+        if "runningValue" in data and data["runningValue"] is not None:
+            rv = data["runningValue"]
+            if not isinstance(rv, (str, int, float, bool)):
+                return jsonify({"error": "'runningValue' must be a string, number, or boolean"}), 400
+            oee["runningValue"] = rv
+
+        ict = data.get("idealCycleTime")
+        if ict is not None:
+            try:
+                oee["idealCycleTime"] = float(ict)
+                if oee["idealCycleTime"] <= 0:
+                    return jsonify({"error": "'idealCycleTime' must be > 0"}), 400
+            except (ValueError, TypeError):
+                return jsonify({"error": "Invalid idealCycleTime"}), 400
+        else:
+            return jsonify({"error": "'idealCycleTime' is required"}), 400
+
+        phd = data.get("plannedHoursPerDay")
+        if phd is not None:
+            try:
+                oee["plannedHoursPerDay"] = float(phd)
+                if oee["plannedHoursPerDay"] <= 0 or oee["plannedHoursPerDay"] > 24:
+                    return jsonify({"error": "'plannedHoursPerDay' must be between 0 and 24"}), 400
+            except (ValueError, TypeError):
+                return jsonify({"error": "Invalid plannedHoursPerDay"}), 400
+        else:
+            return jsonify({"error": "'plannedHoursPerDay' is required"}), 400
+
+        device["oeeConfig"] = oee
+        save_config(config)
+
+    return jsonify({"message": "OEE config saved", "oeeConfig": oee})
+
+
+@app.route("/api/oee/calculate", methods=["GET"])
+def api_oee_calculate():
+    """Calculates OEE for a device over a time range.
+
+    Query params: device (required), hours (default 24)
+    """
+    device_name = request.args.get("device")
+    if not device_name:
+        return jsonify({"error": "'device' parameter is required"}), 400
+    hours = request.args.get("hours", 24, type=int)
+    hours = max(1, min(hours, 8760))
+
+    try:
+        _safe_flux_str(device_name)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+
+    config = load_config()
+    _, device = _find_device(config, device_name)
+    if device is None:
+        return jsonify({"error": f"Device '{device_name}' not found"}), 404
+
+    # Plant filter: check user is allowed to access this device's plant
+    _oee_allowed = getattr(g, "plants", None)
+    if _oee_allowed and device.get("plant") not in _oee_allowed:
+        return jsonify({"error": "Access denied"}), 403
+
+    oee_cfg = device.get("oeeConfig", {})
+    if not oee_cfg.get("enabled"):
+        return jsonify({"error": f"OEE not configured for device '{device_name}'"}), 400
+
+    running_tag = oee_cfg.get("runningTag")
+    count_tag = oee_cfg.get("productionCountTag")
+    reject_tag = oee_cfg.get("rejectCountTag")
+    ideal_cycle = oee_cfg.get("idealCycleTime", 1)
+    planned_hours_day = oee_cfg.get("plannedHoursPerDay", 8)
+    running_value = oee_cfg.get("runningValue")
+
+    bucket = os.environ.get("INFLUXDB_BUCKET", "plc4x_raw")
+
+    def query_tag(alias):
+        flux = f'''
+        from(bucket: "{bucket}")
+          |> range(start: -{hours}h)
+          |> filter(fn: (r) => r._measurement == "plc4x_tags")
+          |> filter(fn: (r) => r.device == "{device_name}")
+          |> filter(fn: (r) => r.alias == "{_safe_flux_str(alias)}")
+          |> filter(fn: (r) => r._field == "value")
+          |> sort(columns: ["_time"])
+        '''
+        return _influx_query(flux)
+
+    try:
+        # --- Availability ---
+        running_records = query_tag(running_tag) if running_tag else []
+        run_time_s = 0
+        if running_records:
+            for i in range(len(running_records) - 1):
+                val = running_records[i].get_value()
+                is_running = (val == running_value) if running_value is not None else bool(val)
+                if is_running:
+                    t1 = running_records[i].get_time()
+                    t2 = running_records[i + 1].get_time()
+                    delta = (t2 - t1).total_seconds()
+                    if delta < 300:  # max 5 min gap between samples
+                        run_time_s += delta
+
+        planned_time_s = planned_hours_day * 3600 * (hours / 24)
+        availability = min(run_time_s / planned_time_s, 1.0) if planned_time_s > 0 else 0
+
+        # --- Performance ---
+        count_records = query_tag(count_tag) if count_tag else []
+        total_count = 0
+        if count_records:
+            first_val = count_records[0].get_value() or 0
+            last_val = count_records[-1].get_value() or 0
+            total_count = last_val - first_val
+            if total_count < 0:
+                total_count = last_val  # counter rollover
+
+        theoretical_max = run_time_s / ideal_cycle if ideal_cycle > 0 else 0
+        performance = min(total_count / theoretical_max, 1.0) if theoretical_max > 0 else 0
+
+        # --- Quality ---
+        reject_count = 0
+        if reject_tag:
+            reject_records = query_tag(reject_tag)
+            if reject_records:
+                first_val = reject_records[0].get_value() or 0
+                last_val = reject_records[-1].get_value() or 0
+                reject_count = last_val - first_val
+                if reject_count < 0:
+                    reject_count = last_val
+
+        good_count = max(total_count - reject_count, 0)
+        quality = good_count / total_count if total_count > 0 else 1.0
+
+        oee_value = availability * performance * quality
+
+        return jsonify({
+            "oee": round(oee_value, 4),
+            "availability": round(availability, 4),
+            "performance": round(performance, 4),
+            "quality": round(quality, 4),
+            "details": {
+                "plannedTime_h": round(planned_time_s / 3600, 2),
+                "runTime_h": round(run_time_s / 3600, 2),
+                "downTime_h": round(max(planned_time_s - run_time_s, 0) / 3600, 2),
+                "totalCount": int(round(total_count)),
+                "goodCount": int(round(good_count)),
+                "rejectCount": int(round(reject_count)),
+                "idealCycleTime_s": ideal_cycle,
+                "theoreticalMax": int(round(theoretical_max)),
+                "samples": len(running_records)
+            }
+        })
+
+    except Exception as e:
+        return jsonify({"error": f"OEE calculation failed: {e}"}), 500
+
+
+@app.route("/api/oee/trend", methods=["GET"])
+def api_oee_trend():
+    """Returns OEE trend data in hourly or daily buckets.
+
+    Query params: device (required), hours (default 24), interval (default: auto)
+    """
+    device_name = request.args.get("device")
+    if not device_name:
+        return jsonify({"error": "'device' parameter is required"}), 400
+    hours = request.args.get("hours", 24, type=int)
+    hours = max(1, min(hours, 8760))
+
+    try:
+        _safe_flux_str(device_name)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+
+    config = load_config()
+    _, device = _find_device(config, device_name)
+    if device is None:
+        return jsonify({"error": f"Device '{device_name}' not found"}), 404
+
+    # Plant filter: check user is allowed to access this device's plant
+    _trend_allowed = getattr(g, "plants", None)
+    if _trend_allowed and device.get("plant") not in _trend_allowed:
+        return jsonify({"error": "Access denied"}), 403
+
+    oee_cfg = device.get("oeeConfig", {})
+    if not oee_cfg.get("enabled"):
+        return jsonify({"error": "OEE not configured"}), 400
+
+    running_tag = oee_cfg.get("runningTag")
+    ideal_cycle = oee_cfg.get("idealCycleTime", 1)
+    planned_hours_day = oee_cfg.get("plannedHoursPerDay", 8)
+    running_value = oee_cfg.get("runningValue")
+
+    # Determine bucket interval
+    if hours <= 24:
+        interval_h = 1
+    elif hours <= 168:
+        interval_h = 4
+    else:
+        interval_h = 24
+
+    bucket = os.environ.get("INFLUXDB_BUCKET", "plc4x_raw")
+
+    try:
+        # Query running tag with windowed aggregation
+        flux = f'''
+        from(bucket: "{bucket}")
+          |> range(start: -{hours}h)
+          |> filter(fn: (r) => r._measurement == "plc4x_tags")
+          |> filter(fn: (r) => r.device == "{device_name}")
+          |> filter(fn: (r) => r.alias == "{_safe_flux_str(running_tag)}")
+          |> filter(fn: (r) => r._field == "value")
+          |> aggregateWindow(every: {interval_h}h, fn: mean, createEmpty: true)
+          |> sort(columns: ["_time"])
+        '''
+        records = _influx_query(flux)
+
+        trend = []
+        for r in records:
+            val = r.get_value()
+            if val is None:
+                val = 0
+            # mean of running state approximates availability for the interval
+            avail = max(0, min(float(val), 1.0))
+            trend.append({
+                "time": r.get_time().isoformat() if r.get_time() else "",
+                "availability": round(avail, 4)
+            })
+
+        return jsonify({"trend": trend, "interval_h": interval_h})
+
+    except Exception as e:
+        return jsonify({"error": f"OEE trend query failed: {e}"}), 500
+
+
+# ─── Shift Logbook ──────────────────────────────────────────────────────
+
+@app.route("/api/logbook", methods=["GET"])
+def logbook_get():
+    try:
+        lines = int(request.args.get("lines", 100))
+    except (ValueError, TypeError):
+        lines = 100
+    lines = max(1, min(lines, 1000))
+    shift_filter = request.args.get("shift", "").strip().lower()
+    entries = []
+    with LOGBOOK_LOCK:
+        if os.path.exists(LOGBOOK_PATH):
+            with open(LOGBOOK_PATH, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        entry = _json.loads(line)
+                        if shift_filter and entry.get("shift", "").lower() != shift_filter:
+                            continue
+                        entries.append(entry)
+                    except Exception:
+                        pass
+    entries.reverse()
+    return jsonify({"entries": entries[:lines]})
+
+
+@app.route("/api/logbook", methods=["POST"])
+@require_operator
+def logbook_post():
+    body = request.get_json(force=True) or {}
+    message = (body.get("message") or "").strip()[:5000]
+    if not message:
+        return jsonify({"error": "message is required"}), 400
+    shift = (body.get("shift") or "").strip().lower()
+    category = (body.get("category") or "observation").strip().lower()
+    priority = (body.get("priority") or "normal").strip().lower()
+    now = datetime.datetime.utcnow()
+    entry = {
+        "id": now.strftime("%Y%m%dT%H%M%S%f"),
+        "timestamp": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "user": getattr(g, "user", "unknown"),
+        "shift": shift,
+        "category": category,
+        "priority": priority,
+        "message": message,
+    }
+    with LOGBOOK_LOCK:
+        with open(LOGBOOK_PATH, "a", encoding="utf-8") as f:
+            f.write(_json.dumps(entry) + "\n")
+    # Periodic trim (1% chance per write)
+    if _random.random() < 0.01:
+        _trim_jsonl_file(LOGBOOK_PATH, LOGBOOK_LOCK, LOGBOOK_MAX_LINES, LOGBOOK_MAX_DAYS)
+    return jsonify(entry), 201
+
+
+@app.route("/api/tags/history", methods=["GET"])
+def api_tag_history():
+    """Returns tag value history for trending. Query: device, tag, hours (default 1)."""
+    device = request.args.get("device")
+    tag_alias = request.args.get("tag")
+    if not device or not tag_alias:
+        return jsonify({"error": "'device' and 'tag' are required"}), 400
+    hours = request.args.get("hours", 1, type=int)
+    hours = max(1, min(hours, 8760))  # up to 1 year; daily bucket covers beyond 30 days
+    try:
+        _safe_flux_str(device)
+        _safe_flux_str(tag_alias)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    # Plant filter: check user is allowed to access this device's plant
+    _th_config = load_config()
+    _, _th_device = _find_device(_th_config, device)
+    if _th_device is not None:
+        _th_allowed = getattr(g, "plants", None)
+        if _th_allowed and _th_device.get("plant") not in _th_allowed:
+            return jsonify({"error": "Access denied"}), 403
+
+    # Smart bucket + window selection based on time range
+    if hours <= 6:
+        bucket = os.environ.get("INFLUXDB_BUCKET", "plc4x_raw")
+        window = "5s" if hours <= 1 else "30s"
+    elif hours <= 168:
+        bucket = "plc4x_hourly"
+        window = "1h"
+    else:
+        bucket = "plc4x_daily" if hours > 720 else "plc4x_hourly"
+        window = "1d" if hours > 720 else "1h"
+
+    flux = f'''
+from(bucket: "{bucket}")
+  |> range(start: -{hours}h)
+  |> filter(fn: (r) => r._measurement == "plc4x_tags")
+  |> filter(fn: (r) => r.device == "{device}")
+  |> filter(fn: (r) => r.alias == "{tag_alias}")
+  |> filter(fn: (r) => r._field == "value")
+  |> aggregateWindow(every: {window}, fn: mean, createEmpty: false)
+  |> sort(columns: ["_time"])
+  |> limit(n: 2000)
+'''
+    cache_key = f"{device}:{tag_alias}:{hours}"
+    cached = _trend_cache_get(cache_key)
+    if cached is not None:
+        return jsonify(cached)
+    try:
+        records = _influx_query(flux)
+
+        # Fallback to raw bucket if aggregated bucket returned no data and
+        # the time range is within raw retention (90 days = 2160 hours)
+        if not records and bucket != os.environ.get("INFLUXDB_BUCKET", "plc4x_raw") and hours <= 2160:
+            raw_bucket = os.environ.get("INFLUXDB_BUCKET", "plc4x_raw")
+            raw_window = "1m" if hours <= 24 else "5m" if hours <= 168 else "30m"
+            flux_raw = f'''
+from(bucket: "{raw_bucket}")
+  |> range(start: -{hours}h)
+  |> filter(fn: (r) => r._measurement == "plc4x_tags")
+  |> filter(fn: (r) => r.device == "{device}")
+  |> filter(fn: (r) => r.alias == "{tag_alias}")
+  |> filter(fn: (r) => r._field == "value")
+  |> aggregateWindow(every: {raw_window}, fn: mean, createEmpty: false)
+  |> sort(columns: ["_time"])
+  |> limit(n: 2000)
+'''
+            records = _influx_query(flux_raw)
+
+        points = [{"t": r.get_time().isoformat(), "v": r.get_value()} for r in records if r.get_value() is not None]
+        result = {"device": device, "tag": tag_alias, "hours": hours, "points": points}
+        _trend_cache_set(cache_key, result)
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({"error": f"Query failed: {e}"}), 500
+
+
+# ─── Grafana Proxy (authenticated) ─────────────────────────────────────
+
+_GRAFANA_URL = os.environ.get("GRAFANA_URL", "http://grafana:3000")
+_GRAFANA_USER = os.environ.get("GRAFANA_ADMIN_USER", "admin")
+_GRAFANA_PASS = os.environ.get("GRAFANA_ADMIN_PASSWORD", os.environ.get("GF_SECURITY_ADMIN_PASSWORD", "admin"))
+
+
+@app.route("/grafana/<path:path>", methods=["GET"])
+def grafana_proxy(path):
+    """Proxy Grafana requests through the authenticated admin panel."""
+    import requests as _requests
+    grafana_url = f"{_GRAFANA_URL}/{path}"
+    if request.query_string:
+        grafana_url += f"?{request.query_string.decode()}"
+    try:
+        headers = {"Accept": request.headers.get("Accept", "*/*")}
+        resp = _requests.get(
+            grafana_url,
+            auth=(_GRAFANA_USER, _GRAFANA_PASS),
+            headers=headers,
+            timeout=15,
+            stream=True
+        )
+        excluded_headers = {"content-encoding", "transfer-encoding", "connection"}
+        response_headers = {k: v for k, v in resp.headers.items() if k.lower() not in excluded_headers}
+        # Allow embedding in iframe from same origin
+        response_headers.pop("X-Frame-Options", None)
+        return Response(resp.content, status=resp.status_code, headers=response_headers)
+    except Exception as e:
+        return jsonify({"error": f"Grafana unavailable: {e}"}), 502
+
+
+# ─── Reports & Export ──────────────────────────────────────────────────
+
+_SAFE_FLUX_RE = re.compile(r'^[\w\-\.]+$')
+
+
+def _safe_flux_str(value):
+    """Validate that a value is safe to embed in a Flux string literal."""
+    if not value or not _SAFE_FLUX_RE.match(value):
+        raise ValueError(f"Invalid filter value: {value!r}")
+    return value
+
+
+def _influx_query(flux_query):
+    """Execute a Flux query against InfluxDB and return list of records."""
+    client = _get_influx_client()
+    org = os.environ.get("INFLUXDB_ORG", "plc4x")
+    tables = client.query_api().query(flux_query, org=org)
+    records = []
+    for table in tables:
+        for record in table.records:
+            records.append(record)
+    return records
+
+
+@app.route("/api/export/csv", methods=["GET"])
+def api_export_csv():
+    """Exports tag history from InfluxDB as CSV.
+
+    Query params:
+      device (optional) - filter by device name
+      tag (optional) - filter by tag alias
+      hours (default 24) - how far back to query
+      plant (optional) - filter by plant
+    """
+    import csv
+    import io
+
+    device = request.args.get("device")
+    tag_alias = request.args.get("tag")
+    plant = request.args.get("plant")
+    hours = request.args.get("hours", 24, type=int)
+    hours = max(1, min(hours, 8760))
+
+    # Validate filter inputs against injection
+    try:
+        if device: _safe_flux_str(device)
+        if tag_alias: _safe_flux_str(tag_alias)
+        if plant: _safe_flux_str(plant)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+
+    # Plant filter: if user has plant restrictions, enforce them
+    plant_filter = None
+    _csv_allowed = getattr(g, "plants", None)
+    if _csv_allowed:
+        if device:
+            _csv_config = load_config()
+            _, _csv_device = _find_device(_csv_config, device)
+            if _csv_device is not None and _csv_device.get("plant") not in _csv_allowed:
+                return jsonify({"error": "Access denied"}), 403
+        # Restrict plant filter to user's allowed plants
+        if plant and plant not in _csv_allowed:
+            return jsonify({"error": "Access denied"}), 403
+        if not plant and len(_csv_allowed) > 1:
+            # Build OR filter for all allowed plants
+            plant_filter = " or ".join([f'r["plant"] == "{_safe_flux_str(p)}"' for p in _csv_allowed])
+        elif not plant and len(_csv_allowed) == 1:
+            plant = _csv_allowed[0]
+
+    bucket = os.environ.get("INFLUXDB_BUCKET", "plc4x_raw")
+    flux = f'''
+    from(bucket: "{bucket}")
+      |> range(start: -{hours}h)
+      |> filter(fn: (r) => r._measurement == "plc4x_tags")
+      |> filter(fn: (r) => r._field == "value" or r._field == "value_str")
+    '''
+    if device:
+        flux += f'  |> filter(fn: (r) => r.device == "{device}")\n'
+    if tag_alias:
+        flux += f'  |> filter(fn: (r) => r.alias == "{tag_alias}")\n'
+    if plant:
+        flux += f'  |> filter(fn: (r) => r.plant == "{plant}")\n'
+    elif plant_filter:
+        flux += f'  |> filter(fn: (r) => {plant_filter})\n'
+    flux += '  |> sort(columns: ["_time"])\n'
+    flux += '  |> limit(n: 100000)\n'
+
+    try:
+        records = _influx_query(flux)
+    except Exception as e:
+        return jsonify({"error": f"InfluxDB query failed: {e}"}), 500
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["Timestamp", "Plant", "Device", "Tag", "Value"])
+    for r in records:
+        writer.writerow([
+            r.get_time().strftime("%Y-%m-%d %H:%M:%S") if r.get_time() else "",
+            r.values.get("plant", ""),
+            r.values.get("device", ""),
+            r.values.get("alias", ""),
+            r.get_value()
+        ])
+
+    safe_device = re.sub(r'[^\w\-]', '_', device) if device else 'all'
+    filename = f"plc4x_export_{safe_device}_{hours}h.csv"
+    resp = make_response(output.getvalue())
+    resp.headers["Content-Type"] = "text/csv; charset=utf-8"
+    resp.headers["Content-Disposition"] = f'attachment; filename="{filename}"'
+    return resp
+
+
+@app.route("/api/export/pdf", methods=["GET"])
+def api_export_pdf():
+    """Generates a PDF report with device status, tag summary, and alarm history.
+
+    Query params:
+      hours (default 24) - period to cover
+      plant (optional) - filter by plant
+      device (optional) - filter by device
+    """
+    import io
+    import datetime as _dt
+    from reportlab.lib import colors
+    from reportlab.lib.pagesizes import A4, landscape
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.lib.units import mm
+    from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+
+    device_filter = request.args.get("device")
+    plant_filter = request.args.get("plant")
+    hours = request.args.get("hours", 24, type=int)
+    hours = max(1, min(hours, 8760))
+
+    try:
+        if device_filter: _safe_flux_str(device_filter)
+        if plant_filter: _safe_flux_str(plant_filter)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+
+    # Plant filter: enforce user's allowed plants
+    _pdf_allowed = getattr(g, "plants", None)
+    if _pdf_allowed:
+        if device_filter:
+            _pdf_config = load_config()
+            _, _pdf_device = _find_device(_pdf_config, device_filter)
+            if _pdf_device is not None and _pdf_device.get("plant") not in _pdf_allowed:
+                return jsonify({"error": "Access denied"}), 403
+        if plant_filter and plant_filter not in _pdf_allowed:
+            return jsonify({"error": "Access denied"}), 403
+
+    now = _dt.datetime.now(_dt.timezone.utc)
+    period_start = now - _dt.timedelta(hours=hours)
+
+    # --- Gather data ---
+    from poller import get_cache, get_alarms
+
+    # Live device status
+    cache = get_cache()
+    devices = cache.get("devices", [])
+    if device_filter:
+        devices = [d for d in devices if d["name"] == device_filter]
+    if plant_filter:
+        devices = [d for d in devices if d.get("plant") == plant_filter]
+
+    # Alarm history
+    alarm_data = get_alarms()
+    active_alarms = list(alarm_data.get("active", {}).values())
+    history_alarms = alarm_data.get("history", [])
+    if _pdf_allowed:
+        active_alarms = [a for a in active_alarms if a.get("plant") in _pdf_allowed]
+        history_alarms = [a for a in history_alarms if a.get("plant") in _pdf_allowed]
+
+    # Tag statistics from InfluxDB
+    bucket = os.environ.get("INFLUXDB_BUCKET", "plc4x_raw")
+    stats = []
+    try:
+        flux = f'''
+        from(bucket: "{bucket}")
+          |> range(start: -{hours}h)
+          |> filter(fn: (r) => r._measurement == "plc4x_tags")
+          |> filter(fn: (r) => r._field == "value")
+        '''
+        if device_filter:
+            flux += f'  |> filter(fn: (r) => r.device == "{device_filter}")\n'
+        if plant_filter:
+            flux += f'  |> filter(fn: (r) => r.plant == "{plant_filter}")\n'
+        flux += '''
+          |> group(columns: ["device", "alias"])
+          |> reduce(fn: (r, accumulator) => ({
+              count: accumulator.count + 1,
+              sum: accumulator.sum + r._value,
+              min: if r._value < accumulator.min then r._value else accumulator.min,
+              max: if r._value > accumulator.max then r._value else accumulator.max
+            }), identity: {count: 0, sum: 0.0, min: 1e20, max: -1e20})
+        '''
+        records = _influx_query(flux)
+        for r in records:
+            count = r.values.get("count", 0)
+            stats.append({
+                "device": r.values.get("device", ""),
+                "alias": r.values.get("alias", ""),
+                "min": round(r.values.get("min", 0), 2),
+                "max": round(r.values.get("max", 0), 2),
+                "avg": round(r.values.get("sum", 0) / count, 2) if count > 0 else 0,
+                "count": count
+            })
+    except Exception as e:
+        app.logger.warning(f"PDF tag stats query failed: {e}")
+
+    # --- Build PDF ---
+    buf = io.BytesIO()
+    doc = SimpleDocTemplate(buf, pagesize=landscape(A4), topMargin=15*mm, bottomMargin=15*mm,
+                            leftMargin=15*mm, rightMargin=15*mm)
+    styles = getSampleStyleSheet()
+    title_style = ParagraphStyle("Title2", parent=styles["Title"], fontSize=18, spaceAfter=6)
+    subtitle_style = ParagraphStyle("Sub", parent=styles["Heading2"], fontSize=12, spaceAfter=4)
+    small_style = ParagraphStyle("Small", parent=styles["Normal"], fontSize=8)
+
+    elements = []
+
+    # Header
+    elements.append(Paragraph("PLC4X Manager — Report", title_style))
+    elements.append(Paragraph(
+        f"Period: {period_start.strftime('%Y-%m-%d %H:%M')} to {now.strftime('%Y-%m-%d %H:%M UTC')} ({hours}h)"
+        + (f" | Plant: {plant_filter}" if plant_filter else "")
+        + (f" | Device: {device_filter}" if device_filter else ""),
+        small_style))
+    elements.append(Spacer(1, 8*mm))
+
+    # Device Status
+    elements.append(Paragraph("Device Status", subtitle_style))
+    if devices:
+        data = [["Device", "Plant", "Status", "Tags OK", "Tags Error", "Latency"]]
+        for d in devices:
+            ok = sum(1 for t in d.get("tags", []) if t.get("status") == "ok")
+            err = sum(1 for t in d.get("tags", []) if t.get("status") == "read_error")
+            data.append([d["name"], d.get("plant", ""), d.get("status", ""),
+                        str(ok), str(err), f"{d.get('read_latency_ms', '-')} ms"])
+        t = Table(data, repeatRows=1)
+        t.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#c8102e")),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+            ("FONTSIZE", (0, 0), (-1, -1), 8),
+            ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f5f5f5")]),
+        ]))
+        elements.append(t)
+    else:
+        elements.append(Paragraph("No devices found.", small_style))
+    elements.append(Spacer(1, 6*mm))
+
+    # Tag Statistics
+    elements.append(Paragraph(f"Tag Statistics (last {hours}h)", subtitle_style))
+    if stats:
+        data = [["Device", "Tag", "Min", "Max", "Avg", "Samples"]]
+        for s in sorted(stats, key=lambda x: (x["device"], x["alias"])):
+            data.append([s["device"], s["alias"], str(s["min"]), str(s["max"]),
+                        str(s["avg"]), str(s["count"])])
+        t = Table(data, repeatRows=1)
+        t.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#c8102e")),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+            ("FONTSIZE", (0, 0), (-1, -1), 8),
+            ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f5f5f5")]),
+        ]))
+        elements.append(t)
+    else:
+        elements.append(Paragraph("No tag data available for this period.", small_style))
+    elements.append(Spacer(1, 6*mm))
+
+    # Active Alarms
+    elements.append(Paragraph("Active Alarms", subtitle_style))
+    if active_alarms:
+        data = [["Severity", "Device", "Tag", "Value", "Threshold", "Since", "ACK"]]
+        for a in active_alarms:
+            ts = a.get("timestamp", "")[:19].replace("T", " ") if a.get("timestamp") else ""
+            data.append([a.get("severity", "").upper(), a.get("device", ""), a.get("tag", ""),
+                        str(a.get("value", "")), f"{a.get('condition','')}{a.get('threshold','')}",
+                        ts, "Yes" if a.get("acknowledged") else "No"])
+        t = Table(data, repeatRows=1)
+        t.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#c8102e")),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+            ("FONTSIZE", (0, 0), (-1, -1), 8),
+            ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f5f5f5")]),
+        ]))
+        elements.append(t)
+    else:
+        elements.append(Paragraph("No active alarms.", small_style))
+    elements.append(Spacer(1, 6*mm))
+
+    # Alarm History (last 50)
+    elements.append(Paragraph("Alarm History (recent)", subtitle_style))
+    recent = list(reversed(history_alarms[-50:]))
+    if recent:
+        data = [["Severity", "Device", "Tag", "Value", "Status", "Triggered", "Cleared"]]
+        for a in recent:
+            ts = a.get("timestamp", "")[:19].replace("T", " ") if a.get("timestamp") else ""
+            cl = a.get("clearedAt", "")[:19].replace("T", " ") if a.get("clearedAt") else ""
+            data.append([a.get("severity", "").upper(), a.get("device", ""), a.get("tag", ""),
+                        str(a.get("value", "")), a.get("status", ""), ts, cl])
+        t = Table(data, repeatRows=1)
+        t.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#c8102e")),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+            ("FONTSIZE", (0, 0), (-1, -1), 8),
+            ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f5f5f5")]),
+        ]))
+        elements.append(t)
+    else:
+        elements.append(Paragraph("No alarm history.", small_style))
+
+    # Footer
+    elements.append(Spacer(1, 10*mm))
+    elements.append(Paragraph(
+        f"Generated by PLC4X Manager on {now.strftime('%Y-%m-%d %H:%M:%S UTC')}",
+        ParagraphStyle("Footer", parent=styles["Normal"], fontSize=7, textColor=colors.grey)))
+
+    doc.build(elements)
+    buf.seek(0)
+
+    filename = f"plc4x_report_{now.strftime('%Y%m%d_%H%M')}.pdf"
+    resp = make_response(buf.getvalue())
+    resp.headers["Content-Type"] = "application/pdf"
+    resp.headers["Content-Disposition"] = f'attachment; filename="{filename}"'
+    return resp
+
+
+# ─── Custom Data ───────────────────────────────────────────────────────
+
+@app.route("/api/data/write", methods=["POST"])
+@require_operator
+def api_data_write():
+    """Writes custom data points to InfluxDB.
+
+    Use this to ingest data from any source: manual inputs, vision AI,
+    quality checks, external sensors, etc. Data appears in Grafana
+    alongside PLC data.
+
+    Request body:
+    {
+        "measurement": "quality_check",
+        "tags": {"line": "Line1", "product": "BoxA"},
+        "fields": {"result": 1, "score": 0.95},
+        "timestamp": "2026-03-28T20:00:00Z"  (optional, defaults to now)
+    }
+
+    Or batch write:
+    [
+        {"measurement": "quality_check", "tags": {...}, "fields": {...}},
+        {"measurement": "quality_check", "tags": {...}, "fields": {...}}
+    ]
+    """
+    data = request.get_json()
+    if not data:
+        return jsonify({"error": "Empty payload"}), 400
+
+    # Support single or batch
+    points = data if isinstance(data, list) else [data]
+
+    influx_bucket = os.environ.get("INFLUXDB_BUCKET", "plc4x_raw")
+
+    try:
+        from influxdb_client import Point
+        from influxdb_client.client.write_api import SYNCHRONOUS
+
+        client = _get_influx_client()
+        write_api = client.write_api(write_options=SYNCHRONOUS)
+
+        written = 0
+        for item in points:
+            measurement = item.get("measurement")
+            fields = item.get("fields")
+            if not measurement or not fields or not isinstance(fields, dict):
+                continue
+
+            p = Point(measurement)
+
+            # Add tags
+            for k, v in item.get("tags", {}).items():
+                p = p.tag(str(k), str(v))
+
+            # Add fields
+            for k, v in fields.items():
+                if isinstance(v, bool):
+                    p = p.field(str(k), float(v))
+                elif isinstance(v, (int, float)):
+                    p = p.field(str(k), float(v))
+                else:
+                    p = p.field(str(k), str(v))
+
+            # Timestamp
+            ts = item.get("timestamp")
+            if ts:
+                p = p.time(ts)
+
+            write_api.write(bucket=influx_bucket, record=p)
+            written += 1
+
+            # Also publish to MQTT if available
+            try:
+                import json as _json
+                from poller import _mqtt_client, MQTT_TOPIC_PREFIX
+                if _mqtt_client:
+                    topic = f"{MQTT_TOPIC_PREFIX}/_custom/{measurement}"
+                    _mqtt_client.publish(topic, _json.dumps({"tags": item.get("tags", {}), "fields": fields}), qos=0)
+            except Exception:
+                pass
+
+        write_api.close()
+
+        return jsonify({"message": f"{written} data point(s) written", "written": written})
+
+    except Exception as e:
+        return jsonify({"error": f"Write failed: {str(e)}"}), 500
+
+
+def _audit_write(device, tag, value, error=None):
+    """Appends a write operation to the audit log."""
+    import datetime
+    user = getattr(g, "user", "unknown")
+    ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    status = "OK" if not error else f"FAILED: {error}"
+    line = f"[{ts}] user={user} device={device} tag={tag} value={value} status={status}\n"
+    try:
+        with open(_WRITE_AUDIT_LOG, "a", encoding="utf-8") as f:
+            f.write(line)
+    except Exception:
+        pass
+
+
+@app.route("/api/live/write", methods=["POST"])
+@require_operator
+def api_live_write():
+    """Writes a value to a PLC tag via the OPC-UA server.
+
+    Request body: {"device": "DeviceName", "tag": "TagAlias", "value": 123}
+    The value type is inferred from the current node data type.
+    """
+    import asyncio
+    from asyncua import Client as OpcClient, ua
+
+    data = request.get_json()
+    if not data or "device" not in data or "tag" not in data or "value" not in data:
+        return jsonify({"error": "Fields 'device', 'tag', and 'value' are required"}), 400
+
+    device_name = data["device"]
+    tag_alias = data["tag"]
+    write_value = data["value"]
+
+    config = load_config()
+    opcua_port = config.get("tcpPort", 12687)
+    opcua_url = f"opc.tcp://plc4x-server:{opcua_port}/plc4x"
+
+    # Verify device and tag exist in config
+    device = None
+    for d in config.get("devices", []):
+        if d["name"] == device_name:
+            device = d
+            break
+    if not device:
+        return jsonify({"error": f"Device '{device_name}' not found"}), 404
+
+    # Plant filter: check user is allowed to access this device's plant
+    allowed_plants = getattr(g, "plants", None)
+    if allowed_plants and device.get("plant") not in allowed_plants:
+        return jsonify({"error": "Access denied"}), 403
+
+    if device.get("enabled", True) is False:
+        return jsonify({"error": f"Device '{device_name}' is disabled"}), 400
+    if not device.get("allowWrite", False):
+        return jsonify({"error": f"Write is disabled for device '{device_name}'. Enable it in the device settings (allowWrite)."}), 403
+
+    tag = None
+    for t in device.get("tags", []):
+        if t["alias"] == tag_alias:
+            tag = t
+            break
+    if not tag:
+        return jsonify({"error": f"Tag '{tag_alias}' not found in device '{device_name}'"}), 404
+
+    # Virtual tags: write directly to store, skip OPC-UA
+    if tag.get("address", "").upper().startswith("VIRTUAL"):
+        from poller import set_virtual_tag
+        set_virtual_tag(device_name, tag_alias, write_value)
+        _audit_write(device_name, tag_alias, write_value)
+        return jsonify({"message": f"Virtual tag '{tag_alias}' set to {write_value}"})
+
+    async def write_tag():
+        client = OpcClient(url=opcua_url, timeout=3)
+        client.set_security_string("None")
+        await asyncio.wait_for(client.connect(), timeout=3)
+        try:
+            nsarray = await client.get_namespace_array()
+            ns_idx = None
+            for i, ns in enumerate(nsarray):
+                if "plc4x" in ns.lower() or "middleware" in ns.lower():
+                    ns_idx = i
+                    break
+
+            # Try to find the node (same logic as read)
+            node_ids_to_try = []
+            if ns_idx is not None:
+                node_ids_to_try.append(f"ns={ns_idx};s={device_name}/{tag_alias}")
+                node_ids_to_try.append(f"ns={ns_idx};s={tag_alias}")
+            node_ids_to_try.append(f"ns=2;s={device_name}/{tag_alias}")
+            node_ids_to_try.append(f"ns=2;s={tag_alias}")
+
+            for nid in node_ids_to_try:
+                try:
+                    node = client.get_node(nid)
+                    # Read current data type to cast the value correctly
+                    dv = await asyncio.wait_for(node.read_data_value(), timeout=2)
+                    current_type = dv.Value.VariantType
+
+                    # Cast write_value to the correct OPC-UA type
+                    typed_value = _cast_to_opcua_type(write_value, current_type, ua)
+                    await asyncio.wait_for(
+                        node.write_value(ua.DataValue(ua.Variant(typed_value, current_type))),
+                        timeout=2
+                    )
+                    return {"success": True, "node": nid, "value": write_value}
+                except ua.UaStatusCodeError as e:
+                    return {"success": False, "error": f"Write rejected: {e}"}
+                except Exception:
+                    continue
+
+            return {"success": False, "error": "Tag node not found on OPC-UA server"}
+        finally:
+            await client.disconnect()
+
+    try:
+        loop = asyncio.new_event_loop()
+        try:
+            result = loop.run_until_complete(write_tag())
+        finally:
+            loop.close()
+        if result["success"]:
+            _audit_write(device_name, tag_alias, write_value)
+            return jsonify({"message": f"Value {write_value} written to {device_name}/{tag_alias}"})
+        else:
+            _audit_write(device_name, tag_alias, write_value, error=result["error"])
+            return jsonify({"error": result["error"]}), 400
+    except asyncio.TimeoutError:
+        return jsonify({"error": "Connection timeout - OPC-UA server may not be running"}), 504
+    except Exception as e:
+        return jsonify({"error": f"Write failed: {type(e).__name__}"}), 500
+
+
+def _cast_to_opcua_type(value, variant_type, ua):
+    """Casts a JSON value to the correct OPC-UA variant type."""
+    type_map = {
+        ua.VariantType.Boolean: bool,
+        ua.VariantType.SByte: int,
+        ua.VariantType.Byte: int,
+        ua.VariantType.Int16: int,
+        ua.VariantType.UInt16: int,
+        ua.VariantType.Int32: int,
+        ua.VariantType.UInt32: int,
+        ua.VariantType.Int64: int,
+        ua.VariantType.UInt64: int,
+        ua.VariantType.Float: float,
+        ua.VariantType.Double: float,
+        ua.VariantType.String: str,
+    }
+    cast_fn = type_map.get(variant_type)
+    if cast_fn:
+        return cast_fn(value)
+    return value
+
+
+# =============================================
+# Calculated Tags - Safe Formula Evaluation
+# =============================================
+
+import ast
+import math
+import operator
+
+# Allowed operators for safe formula evaluation
+_SAFE_OPS = {
+    ast.Add: operator.add,
+    ast.Sub: operator.sub,
+    ast.Mult: operator.mul,
+    ast.Div: operator.truediv,
+    ast.FloorDiv: operator.floordiv,
+    ast.Mod: operator.mod,
+    ast.Pow: operator.pow,
+    ast.USub: operator.neg,
+    ast.UAdd: operator.pos,
+}
+
+# Allowed functions in formulas
+_SAFE_FUNCS = {
+    "abs": abs,
+    "round": round,
+    "min": min,
+    "max": max,
+    "sqrt": math.sqrt,
+    "ceil": math.ceil,
+    "floor": math.floor,
+    "log": math.log,
+    "log10": math.log10,
+    "pow": pow,
+    "sum": sum,
+    "avg": lambda *args: sum(args) / len(args) if args else 0,
+    "int": int,
+    "float": float,
+}
+
+
+def evaluate_formula(formula, tag_values):
+    """Safely evaluates a mathematical formula using tag values as variables.
+
+    Args:
+        formula: String formula like "(Temp1 + Temp2) / 2"
+        tag_values: Dict mapping tag aliases to their numeric values
+
+    Returns:
+        (result, None) on success or (None, error_string) on failure
+    """
+    try:
+        tree = ast.parse(formula, mode="eval")
+        result = _eval_node(tree.body, tag_values)
+        return _serialize_value(result), None
+    except ZeroDivisionError:
+        return None, "Division by zero"
+    except KeyError as e:
+        return None, f"Unknown tag: {e}"
+    except Exception as e:
+        return None, f"Formula error: {type(e).__name__}"
+
+
+def _eval_node(node, variables):
+    """Recursively evaluates an AST node with safe operations only."""
+    if isinstance(node, ast.Constant):
+        if isinstance(node.value, (int, float)):
+            return node.value
+        raise ValueError(f"Unsupported constant type: {type(node.value)}")
+
+    if isinstance(node, ast.Name):
+        if node.id in _SAFE_FUNCS:
+            return _SAFE_FUNCS[node.id]
+        if node.id in variables:
+            val = variables[node.id]
+            if isinstance(val, (int, float)):
+                return val
+            raise ValueError(f"Tag '{node.id}' has non-numeric value")
+        raise KeyError(node.id)
+
+    if isinstance(node, ast.BinOp):
+        op = _SAFE_OPS.get(type(node.op))
+        if op is None:
+            raise ValueError(f"Unsupported operator: {type(node.op).__name__}")
+        left = _eval_node(node.left, variables)
+        right = _eval_node(node.right, variables)
+        return op(left, right)
+
+    if isinstance(node, ast.UnaryOp):
+        op = _SAFE_OPS.get(type(node.op))
+        if op is None:
+            raise ValueError(f"Unsupported operator: {type(node.op).__name__}")
+        return op(_eval_node(node.operand, variables))
+
+    if isinstance(node, ast.Call):
+        func = _eval_node(node.func, variables)
+        if not callable(func):
+            raise ValueError("Not a function")
+        args = [_eval_node(a, variables) for a in node.args]
+        return func(*args)
+
+    if isinstance(node, ast.IfExp):
+        test = _eval_node(node.test, variables)
+        return _eval_node(node.body, variables) if test else _eval_node(node.orelse, variables)
+
+    if isinstance(node, ast.Compare):
+        left = _eval_node(node.left, variables)
+        for op_node, comparator in zip(node.ops, node.comparators):
+            right = _eval_node(comparator, variables)
+            if isinstance(op_node, ast.Gt):
+                if not (left > right): return False
+            elif isinstance(op_node, ast.Lt):
+                if not (left < right): return False
+            elif isinstance(op_node, ast.GtE):
+                if not (left >= right): return False
+            elif isinstance(op_node, ast.LtE):
+                if not (left <= right): return False
+            elif isinstance(op_node, ast.Eq):
+                if not (left == right): return False
+            elif isinstance(op_node, ast.NotEq):
+                if not (left != right): return False
+            else:
+                raise ValueError(f"Unsupported comparison")
+            left = right
+        return True
+
+    if isinstance(node, ast.BoolOp):
+        if isinstance(node.op, ast.And):
+            return all(_eval_node(v, variables) for v in node.values)
+        if isinstance(node.op, ast.Or):
+            return any(_eval_node(v, variables) for v in node.values)
+
+    raise ValueError(f"Unsupported expression: {type(node).__name__}")
+
+
+def _process_calculated_tags(device_result, dev_config=None):
+    """Evaluates calculated tags for a device using its read tag values."""
+    if dev_config is None:
+        config = load_config()
+        for d in config.get("devices", []):
+            if d["name"] == device_result["name"]:
+                dev_config = d
+                break
+    if not dev_config:
+        return
+
+    calc_tags = dev_config.get("calculatedTags", [])
+    if not calc_tags:
+        return
+
+    # Build variable map from successfully read tags
+    tag_values = {}
+    for tag in device_result["tags"]:
+        if tag["status"] == "ok" and isinstance(tag["value"], (int, float)):
+            tag_values[tag["alias"]] = tag["value"]
+
+    # Also include previously calculated tags so formulas can chain
+    for calc in calc_tags:
+        alias = calc.get("alias", "")
+        formula = calc.get("formula", "")
+        if not alias or not formula:
+            continue
+
+        value, error = evaluate_formula(formula, tag_values)
+        tag_result = {
+            "alias": alias,
+            "address": f"calc: {formula}",
+            "value": value,
+            "status": "ok" if error is None else "calc_error",
+            "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat() if error is None else None,
+            "calculated": True,
+            "formula": formula,
+            "error": error
+        }
+        device_result["tags"].append(tag_result)
+
+        # Add to variables so subsequent formulas can reference this one
+        if error is None and isinstance(value, (int, float)):
+            tag_values[alias] = value
+
+
+# =============================================
+# Routes - REST API: Manager Version Management
+# =============================================
+
+import subprocess as _subprocess
+
+
+_REPO_DIR = "/app/repo"  # Host repo mounted into container
+
+
+def _run_git(*args, timeout=10):
+    """Run a git command and return stdout. Returns None on error."""
+    try:
+        result = _subprocess.run(
+            ["git"] + list(args),
+            capture_output=True, text=True, timeout=timeout,
+            cwd=_REPO_DIR
+        )
+        return result.stdout.strip() if result.returncode == 0 else None
+    except Exception:
+        return None
+
+
+@app.route("/api/manager/version", methods=["GET"])
+def api_manager_version():
+    """Returns the current Manager version (git tag + commit)."""
+    tag = _run_git("describe", "--tags", "--exact-match") or "dev"
+    commit = _run_git("rev-parse", "--short", "HEAD") or "unknown"
+    full_commit = _run_git("rev-parse", "HEAD") or ""
+    branch = _run_git("rev-parse", "--abbrev-ref", "HEAD") or "main"
+    return jsonify({
+        "version": tag,
+        "commit": commit,
+        "fullCommit": full_commit,
+        "branch": branch
+    })
+
+
+@app.route("/api/manager/check-update", methods=["GET"])
+@require_admin
+def api_manager_check_update():
+    """Check GitHub for updates without applying them."""
+    # Fetch latest from remote
+    _run_git("fetch", "origin", "--tags", "--quiet", timeout=15)
+
+    current_tag = _run_git("describe", "--tags", "--exact-match") or "dev"
+    current_commit = _run_git("rev-parse", "--short", "HEAD") or "unknown"
+
+    latest_tag = _run_git("tag", "-l", "v*", "--sort=-v:refname")
+    if latest_tag:
+        latest_tag = latest_tag.split("\n")[0]
+    else:
+        latest_tag = "unknown"
+
+    latest_commit = _run_git("rev-parse", "--short", "origin/main") or "unknown"
+
+    # Count commits behind
+    behind = _run_git("rev-list", "--count", "HEAD..origin/main") or "0"
+
+    # Get changelog (recent commits on remote not in local)
+    changelog_raw = _run_git("log", "--oneline", "--no-decorate", "HEAD..origin/main")
+    changelog = changelog_raw.split("\n") if changelog_raw else []
+
+    has_update = int(behind) > 0 if behind.isdigit() else False
+
+    return jsonify({
+        "currentVersion": current_tag,
+        "currentCommit": current_commit,
+        "latestVersion": latest_tag,
+        "latestCommit": latest_commit,
+        "behind": int(behind) if behind.isdigit() else 0,
+        "hasUpdate": has_update,
+        "changelog": changelog[:20]
+    })
+
+
+@app.route("/api/manager/update", methods=["POST"])
+@require_admin
+def api_manager_update():
+    """Pull latest changes from GitHub and rebuild containers."""
+    if not _update_lock.acquire(blocking=False):
+        return jsonify({"error": "An update is already in progress"}), 409
+    try:
+        # Check for local uncommitted changes
+        status = _run_git("status", "--porcelain")
+        if status:
+            return jsonify({"error": "Local changes detected. Please commit or stash before updating."}), 409
+
+        # Pull latest
+        pull_result = _run_git("pull", "origin", "main", "--ff-only", timeout=30)
+        if pull_result is None:
+            return jsonify({"error": "Git pull failed. There may be local conflicts."}), 500
+
+        new_tag = _run_git("describe", "--tags", "--exact-match") or "dev"
+        new_commit = _run_git("rev-parse", "--short", "HEAD") or "unknown"
+
+        # Rebuild and restart in background (runs from host repo mount)
+        try:
+            _subprocess.Popen(
+                ["sh", "-c", "sleep 2 && docker-compose -f /app/repo/docker-compose.yml build && docker-compose -f /app/repo/docker-compose.yml up -d > /tmp/manager-update.log 2>&1"],
+                cwd=_REPO_DIR
+            )
+        except Exception as e:
+            return jsonify({"error": f"Rebuild failed: {e}"}), 500
+
+        audit_log("manager_update", {"version": new_tag, "commit": new_commit})
+        return jsonify({
+            "message": f"Update applied. Rebuilding containers... (version: {new_tag})",
+            "version": new_tag,
+            "commit": new_commit
+        })
+    finally:
+        _update_lock.release()
+
+
+@app.route("/api/manager/rollback", methods=["POST"])
+@require_admin
+def api_manager_rollback():
+    """Rollback to the previous tagged version."""
+    if not _update_lock.acquire(blocking=False):
+        return jsonify({"error": "An update is already in progress"}), 409
+    try:
+        tags_raw = _run_git("tag", "-l", "v*", "--sort=-v:refname")
+        if not tags_raw:
+            return jsonify({"error": "No tagged versions found"}), 404
+
+        tags = tags_raw.split("\n")
+        current_tag = _run_git("describe", "--tags", "--exact-match")
+
+        # Find previous version
+        prev_tag = None
+        if current_tag and current_tag in tags:
+            idx = tags.index(current_tag)
+            if idx + 1 < len(tags):
+                prev_tag = tags[idx + 1]
+        elif len(tags) > 1:
+            prev_tag = tags[1]
+
+        if not prev_tag:
+            return jsonify({"error": "No previous version to rollback to"}), 404
+
+        # Reset main branch to previous tag (avoids detached HEAD)
+        reset = _run_git("reset", "--hard", prev_tag)
+        if reset is None:
+            return jsonify({"error": f"Failed to reset to {prev_tag}"}), 500
+
+        # Rebuild in background
+        try:
+            _subprocess.Popen(
+                ["sh", "-c", "sleep 2 && docker-compose -f /app/repo/docker-compose.yml build && docker-compose -f /app/repo/docker-compose.yml up -d > /tmp/manager-update.log 2>&1"],
+                cwd=_REPO_DIR
+            )
+        except Exception as e:
+            return jsonify({"error": f"Rebuild failed: {e}"}), 500
+
+        audit_log("manager_rollback", {"from": current_tag, "to": prev_tag})
+        return jsonify({
+            "message": f"Rolling back to {prev_tag}. Rebuilding...",
+            "version": prev_tag
+        })
+    finally:
+        _update_lock.release()
+
+
+@app.route("/api/manager/update-status", methods=["GET"])
+@require_admin
+def api_manager_update_status():
+    """Poll the status of a background update/rollback rebuild."""
+    try:
+        with open("/tmp/manager-update.log", "r") as f:
+            log_content = f.read()
+        done = "up-d" in log_content or "Started" in log_content or "Running" in log_content
+        failed = "error" in log_content.lower() or "failed" in log_content.lower()
+        return jsonify({"log": log_content[-2000:], "done": done, "failed": failed})
+    except FileNotFoundError:
+        return jsonify({"log": "", "done": False, "failed": False})
+
+
+# =============================================
+# Routes - REST API: PLC4X Version Management
+# =============================================
+
+@app.route("/api/plc4x/version", methods=["GET"])
+def api_plc4x_version():
+    """Returns the current PLC4X uber-jar version and available info."""
+    try:
+        client = get_docker_client()
+        container = client.containers.get(PLC4X_CONTAINER)
+        current_version = "unknown"
+        backup_version = None
+        # Read version files via Docker SDK (works even if container is stopped/restarting)
+        import tarfile, io
+        for fname, target in [("version.txt", "current"), ("version.txt.bak", "backup")]:
+            try:
+                tar_stream, _ = container.get_archive(f"/app/{fname}")
+                raw = b"".join(tar_stream)
+                tar = tarfile.open(fileobj=io.BytesIO(raw))
+                member = tar.getmembers()[0]
+                v = tar.extractfile(member).read().decode("utf-8").strip()
+                if v:
+                    if target == "current":
+                        current_version = v
+                    else:
+                        backup_version = v
+            except Exception:
+                pass
+        # Fallback: read from container env var (initial build version)
+        if current_version == "unknown":
+            env_vars = container.attrs.get("Config", {}).get("Env", [])
+            for env in env_vars:
+                if env.startswith("PLC4X_VERSION="):
+                    current_version = env.split("=", 1)[1]
+                    break
+        return jsonify({"currentVersion": current_version, "backupVersion": backup_version, "container": container.short_id})
+    except Exception:
+        return jsonify({"currentVersion": "unknown", "error": "Cannot read server container"})
+
+
+@app.route("/api/plc4x/latest-version", methods=["GET"])
+def api_plc4x_latest_version():
+    """Checks Maven Central for the latest PLC4X OPC-UA Server version."""
+    import urllib.request
+    import xml.etree.ElementTree as ET
+    try:
+        metadata_url = "https://repo1.maven.org/maven2/org/apache/plc4x/plc4x-opcua-server/maven-metadata.xml"
+        req = urllib.request.Request(metadata_url, headers={"User-Agent": "plc4x-manager/1.0"})
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            xml_data = resp.read()
+        root = ET.fromstring(xml_data)
+        latest = root.findtext(".//latest") or root.findtext(".//release")
+        versions = [v.text for v in root.findall(".//versions/version") if v.text]
+        return jsonify({"latestVersion": latest, "versions": versions[-10:]})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 502
+
+
+@app.route("/api/plc4x/update", methods=["POST"])
+@require_admin
+def api_plc4x_update():
+    """Updates the PLC4X uber-jar to a specified version.
+
+    Downloads the new jar from Maven Central into the server container,
+    then restarts the server. The old jar is backed up.
+
+    Request body: {"version": "0.13.1"}
+    """
+    data = request.get_json()
+    if not data or "version" not in data:
+        return jsonify({"error": "Field 'version' is required"}), 400
+
+    version = data["version"].strip()
+    if not re.match(r'^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9]+)?$', version):
+        return jsonify({"error": "Invalid version format. Use X.Y.Z (e.g., 0.13.1)"}), 400
+
+    jar_url = f"https://repo1.maven.org/maven2/org/apache/plc4x/plc4x-opcua-server/{version}/plc4x-opcua-server-{version}.jar"
+
+    try:
+        # Step 1: Check if version exists on Maven Central (from admin container)
+        import urllib.request
+        req = urllib.request.Request(jar_url, method="HEAD",
+                                    headers={"User-Agent": "plc4x-manager/1.0"})
+        try:
+            urllib.request.urlopen(req, timeout=10)
+        except Exception:
+            return jsonify({"error": f"Version {version} not found on Maven Central. Check https://repo1.maven.org/maven2/org/apache/plc4x/plc4x-opcua-server/"}), 404
+
+        client = get_docker_client()
+        container = client.containers.get(PLC4X_CONTAINER)
+
+        # Step 2: Stop the container (handles restarting state)
+        try:
+            container.stop(timeout=5)
+        except Exception:
+            pass
+
+        # Step 3: Download jar and swap files using Docker SDK (no docker CLI needed)
+        import tempfile, tarfile, io
+
+        # Download new jar locally in admin container
+        tmp_jar = os.path.join(tempfile.gettempdir(), "plc4x-update.jar")
+        req = urllib.request.Request(jar_url, headers={"User-Agent": "plc4x-manager/1.0"})
+        try:
+            with urllib.request.urlopen(req, timeout=120) as resp:
+                with open(tmp_jar, "wb") as f:
+                    while True:
+                        chunk = resp.read(65536)
+                        if not chunk:
+                            break
+                        f.write(chunk)
+        except Exception:
+            container.start()
+            return jsonify({"error": f"Failed to download version {version} from Maven Central."}), 500
+
+        # Backup current jar and version (get_archive works on stopped containers)
+        for fname, bak_name in [("plc4x-opcua-server.jar", "plc4x-opcua-server.jar.bak"),
+                                 ("version.txt", "version.txt.bak")]:
+            try:
+                tar_stream, _ = container.get_archive(f"/app/{fname}")
+                # Re-package with the backup name
+                raw = b"".join(tar_stream)
+                src_tar = tarfile.open(fileobj=io.BytesIO(raw))
+                member = src_tar.getmembers()[0]
+                file_data = src_tar.extractfile(member).read()
+                # Create new tar with backup name
+                buf = io.BytesIO()
+                with tarfile.open(fileobj=buf, mode="w") as t:
+                    info = tarfile.TarInfo(name=bak_name)
+                    info.size = len(file_data)
+                    t.addfile(info, io.BytesIO(file_data))
+                buf.seek(0)
+                container.put_archive("/app", buf.read())
+            except Exception:
+                pass  # No existing file to backup (first run)
+
+        # Copy new jar and version file into the container
+        tar_buf = io.BytesIO()
+        with tarfile.open(fileobj=tar_buf, mode="w") as tar:
+            tar.add(tmp_jar, arcname="plc4x-opcua-server.jar")
+            ver_data = version.encode("utf-8")
+            ver_info = tarfile.TarInfo(name="version.txt")
+            ver_info.size = len(ver_data)
+            tar.addfile(ver_info, io.BytesIO(ver_data))
+        tar_buf.seek(0)
+        container.put_archive("/app", tar_buf.read())
+
+        # Cleanup temp file
+        try:
+            os.unlink(tmp_jar)
+        except Exception:
+            pass
+
+        # Step 4: Start the server
+        container.start()
+
+        return jsonify({
+            "message": f"PLC4X updated to version {version}. Server restarting...",
+            "version": version,
+            "jarUrl": jar_url
+        })
+
+    except docker.errors.NotFound:
+        return jsonify({"error": "Server container not found"}), 404
+    except Exception as e:
+        return jsonify({"error": f"Error during update: {str(e)}"}), 500
+
+
+@app.route("/api/plc4x/rollback", methods=["POST"])
+@require_admin
+def api_plc4x_rollback():
+    """Rolls back to the previous PLC4X jar version (from .bak file)."""
+    import tarfile, io
+    try:
+        client = get_docker_client()
+        container = client.containers.get(PLC4X_CONTAINER)
+
+        # Check if backup jar exists (get_archive works on stopped/restarting containers)
+        try:
+            container.get_archive("/app/plc4x-opcua-server.jar.bak")
+        except docker.errors.NotFound:
+            return jsonify({"error": "No backup jar found. Cannot rollback."}), 404
+
+        # Stop the container first
+        try:
+            container.stop(timeout=5)
+        except Exception:
+            pass
+
+        # Read all 4 files from the container
+        files = {}
+        for fname in ["plc4x-opcua-server.jar", "plc4x-opcua-server.jar.bak",
+                      "version.txt", "version.txt.bak"]:
+            try:
+                tar_stream, _ = container.get_archive(f"/app/{fname}")
+                raw = b"".join(tar_stream)
+                src_tar = tarfile.open(fileobj=io.BytesIO(raw))
+                member = src_tar.getmembers()[0]
+                files[fname] = src_tar.extractfile(member).read()
+            except Exception:
+                pass
+
+        # Build tar with swapped files: current <-> backup
+        tar_buf = io.BytesIO()
+        with tarfile.open(fileobj=tar_buf, mode="w") as tar:
+            for src_name, dst_name in [
+                ("plc4x-opcua-server.jar.bak", "plc4x-opcua-server.jar"),
+                ("plc4x-opcua-server.jar", "plc4x-opcua-server.jar.bak"),
+                ("version.txt.bak", "version.txt"),
+                ("version.txt", "version.txt.bak"),
+            ]:
+                if src_name in files:
+                    info = tarfile.TarInfo(name=dst_name)
+                    info.size = len(files[src_name])
+                    tar.addfile(info, io.BytesIO(files[src_name]))
+        tar_buf.seek(0)
+        container.put_archive("/app", tar_buf.read())
+
+        # Read the restored version
+        rollback_version = "previous"
+        if "version.txt.bak" in files:
+            v = files["version.txt.bak"].decode("utf-8").strip()
+            if v:
+                rollback_version = v
+
+        # Start the server
+        container.start()
+        return jsonify({"message": f"Rolled back to version {rollback_version}. Server restarting..."})
+
+    except docker.errors.NotFound:
+        return jsonify({"error": "Server container not found"}), 404
+    except Exception as e:
+        return jsonify({"error": f"Error during rollback: {str(e)}"}), 500
+
+
+# =============================================
+# Routes - REST API: Connection Templates
+# =============================================
+
+@app.route("/api/templates", methods=["GET"])
+def api_connection_templates():
+    """Returns connection string templates for all supported protocols."""
+    return jsonify([
+        {"protocol": "Siemens S7", "template": "s7://{{IP}}", "example": "s7://192.168.1.10",
+         "tagExamples": [{"alias": "Temperature", "address": "%DB1:0:REAL"}, {"alias": "Counter", "address": "%DB1:4:DINT"},
+                         {"alias": "MotorOn", "address": "%DB1:8.0:BOOL"}, {"alias": "Speed", "address": "%DB1:10:INT"}]},
+        {"protocol": "Modbus TCP", "template": "modbus-tcp://{{IP}}:502", "example": "modbus-tcp://192.168.1.20:502",
+         "tagExamples": [{"alias": "HoldingReg1", "address": "holding-register:1"}, {"alias": "Coil1", "address": "coil:1"},
+                         {"alias": "InputReg1", "address": "input-register:1"}, {"alias": "DiscreteInput1", "address": "discrete-input:1"}]},
+        {"protocol": "Modbus RTU", "template": "modbus-rtu://{{SERIAL_PORT}}", "example": "modbus-rtu:///dev/ttyUSB0",
+         "tagExamples": [{"alias": "HoldingReg1", "address": "holding-register:1"}, {"alias": "Coil1", "address": "coil:1"}]},
+        {"protocol": "Modbus ASCII", "template": "modbus-ascii://{{SERIAL_PORT}}", "example": "modbus-ascii:///dev/ttyUSB0",
+         "tagExamples": [{"alias": "HoldingReg1", "address": "holding-register:1"}]},
+        {"protocol": "OPC-UA (Client)", "template": "opcua:tcp://{{IP}}:4840", "example": "opcua:tcp://192.168.1.30:4840",
+         "tagExamples": [{"alias": "Node1", "address": "ns=2;i=10"}, {"alias": "Node2", "address": "ns=2;s=MyVariable"}]},
+        {"protocol": "EtherNet/IP", "template": "eip://{{IP}}", "example": "eip://192.168.1.40",
+         "tagExamples": [{"alias": "Tag1", "address": "%MyTag:DINT"}]},
+        {"protocol": "Allen-Bradley Logix", "template": "logix://{{IP}}", "example": "logix://192.168.1.50",
+         "tagExamples": [{"alias": "Tag1", "address": "MyTag"}]},
+        {"protocol": "KNXnet/IP", "template": "knxnet-ip://{{IP}}", "example": "knxnet-ip://192.168.1.60",
+         "tagExamples": [{"alias": "Light1", "address": "1/1/1:DPT_Switch"}]},
+        {"protocol": "IEC 60870-5-104", "template": "iec-60870-5-104://{{IP}}", "example": "iec-60870-5-104://192.168.1.70",
+         "tagExamples": [{"alias": "MeasuredFloat", "address": "M_ME_NC_1:5:20"}]},
+        {"protocol": "Firmata (Arduino)", "template": "firmata://{{SERIAL_PORT}}", "example": "firmata:///dev/ttyACM0",
+         "tagExamples": [{"alias": "DigitalPin13", "address": "digital:13"}, {"alias": "AnalogPin0", "address": "analog:0"}]},
+        {"protocol": "Simulated (Test)", "template": "simulated://127.0.0.1", "example": "simulated://127.0.0.1",
+         "tagExamples": [{"alias": "RandomInt", "address": "RANDOM/Temporary:DINT"}, {"alias": "RandomFloat", "address": "RANDOM/Temporary:REAL"},
+                         {"alias": "StateVar", "address": "STATE/Temporary:DINT"}, {"alias": "ProductCode", "address": "VIRTUAL"}]}
+    ])
+
+
+# =============================================
+# Initialization
+# =============================================
+
+def init_config():
+    """Creates default config if it does not exist."""
+    os.makedirs(os.path.dirname(CONFIG_PATH), exist_ok=True)
+    os.makedirs(BACKUP_DIR, exist_ok=True)
+    if not os.path.exists(CONFIG_PATH):
+        default = get_default_config()
+        with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+            yaml.dump(default, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
+
+
+def load_admin_credentials():
+    """Loads persisted admin credentials override if available."""
+    global ADMIN_PASSWORD
+    creds_path = os.path.join(os.path.dirname(CONFIG_PATH), ".admin-credentials")
+    try:
+        with open(creds_path, "r", encoding="utf-8") as f:
+            creds = yaml.safe_load(f)
+            if creds and "password" in creds:
+                ADMIN_PASSWORD = creds["password"]
+                if ADMIN_USERNAME in USERS:
+                    USERS[ADMIN_USERNAME]["password"] = creds["password"]
+                return
+    except FileNotFoundError:
+        pass
+
+    if ADMIN_PASSWORD == "admin":
+        import sys
+        print("[WARNING] Using default admin password. Change it in Security > Admin Panel Credentials!", file=sys.stderr)
+
+
+init_config()
+load_admin_credentials()
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=8080, debug=False)

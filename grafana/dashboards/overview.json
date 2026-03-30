@@ -1,0 +1,72 @@
+{
+  "title": "PLC4X Overview",
+  "uid": "plc4x-overview",
+  "tags": ["plc4x"],
+  "timezone": "browser",
+  "refresh": "5s",
+  "time": {"from": "now-1h", "to": "now"},
+  "panels": [
+    {
+      "id": 1, "title": "Online Devices", "type": "stat",
+      "gridPos": {"h": 4, "w": 6, "x": 0, "y": 0},
+      "datasource": {"type": "influxdb", "uid": "InfluxDB-PLC4X"},
+      "targets": [{"datasource": {"type": "influxdb", "uid": "InfluxDB-PLC4X"}, "query": "from(bucket: \"plc4x_raw\")\n  |> range(start: -1m)\n  |> filter(fn: (r) => r._measurement == \"plc4x_health\")\n  |> filter(fn: (r) => r._field == \"status\")\n  |> last()\n  |> filter(fn: (r) => r._value == 1)\n  |> group()\n  |> count()", "refId": "A"}],
+      "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"steps": [{"color": "green", "value": null}]}}}
+    },
+    {
+      "id": 2, "title": "Tags OK", "type": "stat",
+      "gridPos": {"h": 4, "w": 6, "x": 6, "y": 0},
+      "datasource": {"type": "influxdb", "uid": "InfluxDB-PLC4X"},
+      "targets": [{"datasource": {"type": "influxdb", "uid": "InfluxDB-PLC4X"}, "query": "from(bucket: \"plc4x_raw\")\n  |> range(start: -1m)\n  |> filter(fn: (r) => r._measurement == \"plc4x_health\")\n  |> filter(fn: (r) => r._field == \"tags_ok\")\n  |> last()\n  |> group()\n  |> sum()", "refId": "A"}],
+      "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"steps": [{"color": "green", "value": null}]}}}
+    },
+    {
+      "id": 3, "title": "Tags Error", "type": "stat",
+      "gridPos": {"h": 4, "w": 6, "x": 12, "y": 0},
+      "datasource": {"type": "influxdb", "uid": "InfluxDB-PLC4X"},
+      "targets": [{"datasource": {"type": "influxdb", "uid": "InfluxDB-PLC4X"}, "query": "from(bucket: \"plc4x_raw\")\n  |> range(start: -1m)\n  |> filter(fn: (r) => r._measurement == \"plc4x_health\")\n  |> filter(fn: (r) => r._field == \"tags_error\")\n  |> last()\n  |> group()\n  |> sum()", "refId": "A"}],
+      "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"steps": [{"color": "red", "value": null}]}}}
+    },
+    {
+      "id": 4, "title": "Read Latency", "type": "stat",
+      "gridPos": {"h": 4, "w": 6, "x": 18, "y": 0},
+      "datasource": {"type": "influxdb", "uid": "InfluxDB-PLC4X"},
+      "targets": [{"datasource": {"type": "influxdb", "uid": "InfluxDB-PLC4X"}, "query": "from(bucket: \"plc4x_raw\")\n  |> range(start: -1m)\n  |> filter(fn: (r) => r._measurement == \"plc4x_health\")\n  |> filter(fn: (r) => r._field == \"latency_ms\")\n  |> last()\n  |> group()\n  |> mean()", "refId": "A"}],
+      "fieldConfig": {"defaults": {"unit": "ms", "color": {"mode": "thresholds"}, "thresholds": {"steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 500}, {"color": "red", "value": 2000}]}}}
+    },
+    {
+      "id": 5, "title": "All Tag Values Over Time", "type": "timeseries",
+      "gridPos": {"h": 12, "w": 24, "x": 0, "y": 4},
+      "datasource": {"type": "influxdb", "uid": "InfluxDB-PLC4X"},
+      "targets": [{"datasource": {"type": "influxdb", "uid": "InfluxDB-PLC4X"}, "query": "from(bucket: \"plc4x_raw\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"plc4x_tags\")\n  |> filter(fn: (r) => r._field == \"value\")\n  |> aggregateWindow(every: v.windowPeriod, fn: mean, createEmpty: false)", "refId": "A"}],
+      "fieldConfig": {"defaults": {"custom": {"lineWidth": 2, "fillOpacity": 10}}}
+    },
+    {
+      "id": 6, "title": "Device Health Over Time", "type": "timeseries",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 16},
+      "datasource": {"type": "influxdb", "uid": "InfluxDB-PLC4X"},
+      "targets": [{"datasource": {"type": "influxdb", "uid": "InfluxDB-PLC4X"}, "query": "from(bucket: \"plc4x_raw\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"plc4x_health\")\n  |> filter(fn: (r) => r._field == \"tags_ok\")\n  |> aggregateWindow(every: v.windowPeriod, fn: last, createEmpty: false)", "refId": "A"}]
+    },
+    {
+      "id": 7, "title": "Latest Tag Values", "type": "table",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 16},
+      "datasource": {"type": "influxdb", "uid": "InfluxDB-PLC4X"},
+      "targets": [{"datasource": {"type": "influxdb", "uid": "InfluxDB-PLC4X"}, "query": "from(bucket: \"plc4x_raw\")\n  |> range(start: -1m)\n  |> filter(fn: (r) => r._measurement == \"plc4x_tags\")\n  |> filter(fn: (r) => r._field == \"value\")\n  |> last()\n  |> group()\n  |> keep(columns: [\"device\", \"alias\", \"_value\", \"_time\"])", "refId": "A"}]
+    },
+    {
+      "id": 8, "title": "Active Alerts", "type": "alertlist",
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 24},
+      "options": {
+        "showOptions": "current",
+        "maxItems": 20,
+        "sortOrder": 1,
+        "stateFilter": {"firing": true, "pending": true, "noData": true, "normal": false, "error": true},
+        "alertName": "",
+        "dashboardAlerts": false,
+        "folder": {"id": null, "title": ""},
+        "groupBy": [],
+        "groupMode": "default"
+      }
+    }
+  ]
+}

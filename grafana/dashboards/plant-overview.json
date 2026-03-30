@@ -1,0 +1,58 @@
+{
+  "title": "PLC4X Plant Overview",
+  "uid": "plc4x-plant-overview",
+  "tags": ["plc4x", "plant"],
+  "timezone": "browser",
+  "refresh": "10s",
+  "time": {"from": "now-1h", "to": "now"},
+  "panels": [
+    {
+      "id": 1, "title": "All Plants — Device Status", "type": "table",
+      "gridPos": {"h": 10, "w": 24, "x": 0, "y": 0},
+      "datasource": {"type": "influxdb", "uid": "InfluxDB-PLC4X"},
+      "targets": [{"datasource": {"type": "influxdb", "uid": "InfluxDB-PLC4X"}, "query": "from(bucket: \"plc4x_raw\")\n  |> range(start: -5m)\n  |> filter(fn: (r) => r._measurement == \"plc4x_health\")\n  |> filter(fn: (r) => r._field == \"status\" or r._field == \"tags_ok\" or r._field == \"tags_error\" or r._field == \"latency_ms\")\n  |> last()\n  |> group()\n  |> keep(columns: [\"plant\", \"device\", \"_field\", \"_value\", \"_time\"])\n  |> pivot(rowKey: [\"plant\", \"device\", \"_time\"], columnKey: [\"_field\"], valueColumn: \"_value\")", "refId": "A"}],
+      "fieldConfig": {"overrides": [
+        {"matcher": {"id": "byName", "options": "status"}, "properties": [{"id": "mappings", "value": [{"type": "value", "options": {"0": {"text": "OFFLINE", "color": "red"}, "1": {"text": "ONLINE", "color": "green"}}}]}]},
+        {"matcher": {"id": "byName", "options": "latency_ms"}, "properties": [{"id": "unit", "value": "ms"}]}
+      ]}
+    },
+    {
+      "id": 2, "title": "Online Devices per Plant", "type": "bargauge",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 10},
+      "datasource": {"type": "influxdb", "uid": "InfluxDB-PLC4X"},
+      "targets": [{"datasource": {"type": "influxdb", "uid": "InfluxDB-PLC4X"}, "query": "from(bucket: \"plc4x_raw\")\n  |> range(start: -5m)\n  |> filter(fn: (r) => r._measurement == \"plc4x_health\")\n  |> filter(fn: (r) => r._field == \"status\")\n  |> last()\n  |> filter(fn: (r) => r._value == 1)\n  |> group(columns: [\"plant\"])\n  |> count()\n  |> keep(columns: [\"plant\", \"_value\"])", "refId": "A"}],
+      "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"steps": [{"color": "green", "value": null}]}}}
+    },
+    {
+      "id": 3, "title": "Error Devices per Plant", "type": "bargauge",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 10},
+      "datasource": {"type": "influxdb", "uid": "InfluxDB-PLC4X"},
+      "targets": [{"datasource": {"type": "influxdb", "uid": "InfluxDB-PLC4X"}, "query": "from(bucket: \"plc4x_raw\")\n  |> range(start: -5m)\n  |> filter(fn: (r) => r._measurement == \"plc4x_health\")\n  |> filter(fn: (r) => r._field == \"tags_error\")\n  |> last()\n  |> filter(fn: (r) => r._value > 0)\n  |> group(columns: [\"plant\"])\n  |> count()\n  |> keep(columns: [\"plant\", \"_value\"])", "refId": "A"}],
+      "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"steps": [{"color": "green", "value": null}, {"color": "red", "value": 1}]}}}
+    },
+    {
+      "id": 4, "title": "Tag Values by Plant", "type": "timeseries",
+      "gridPos": {"h": 10, "w": 24, "x": 0, "y": 18},
+      "datasource": {"type": "influxdb", "uid": "InfluxDB-PLC4X"},
+      "targets": [{"datasource": {"type": "influxdb", "uid": "InfluxDB-PLC4X"}, "query": "from(bucket: \"plc4x_raw\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"plc4x_tags\")\n  |> filter(fn: (r) => r._field == \"value\")\n  |> aggregateWindow(every: v.windowPeriod, fn: mean, createEmpty: false)", "refId": "A"}],
+      "fieldConfig": {"defaults": {"custom": {"lineWidth": 2, "fillOpacity": 10}}}
+    },
+    {
+      "id": 5, "title": "Latency per Plant", "type": "timeseries",
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 28},
+      "datasource": {"type": "influxdb", "uid": "InfluxDB-PLC4X"},
+      "targets": [{"datasource": {"type": "influxdb", "uid": "InfluxDB-PLC4X"}, "query": "from(bucket: \"plc4x_raw\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"plc4x_health\")\n  |> filter(fn: (r) => r._field == \"latency_ms\")\n  |> aggregateWindow(every: v.windowPeriod, fn: mean, createEmpty: false)", "refId": "A"}],
+      "fieldConfig": {"defaults": {"unit": "ms", "custom": {"lineWidth": 2, "fillOpacity": 10}}}
+    },
+    {
+      "id": 6, "title": "Active Alerts", "type": "alertlist",
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 36},
+      "options": {
+        "showOptions": "current",
+        "maxItems": 20,
+        "sortOrder": 1,
+        "stateFilter": {"firing": true, "pending": true, "noData": true, "normal": false, "error": true}
+      }
+    }
+  ]
+}

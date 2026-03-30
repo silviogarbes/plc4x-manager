@@ -1,0 +1,2034 @@
+{
+	"info": {
+		"_postman_id": "plc4x-manager-api-collection",
+		"name": "PLC4X Manager",
+		"description": "Complete API collection for PLC4X Manager — FastAPI backend on port 3080.\n\nSetup:\n1. Import this collection into Postman\n2. The base_url variable defaults to http://localhost:3080\n3. Run the Login request first — the token is auto-saved\n4. All other requests inherit Bearer token auth from the collection\n\nRBAC Roles: admin (full access), operator (read + write + ack), monitor (read-only).",
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+	},
+	"auth": {
+		"type": "bearer",
+		"bearer": [
+			{
+				"key": "token",
+				"value": "{{token}}",
+				"type": "string"
+			}
+		]
+	},
+	"variable": [
+		{
+			"key": "base_url",
+			"value": "http://localhost:3080",
+			"type": "string"
+		},
+		{
+			"key": "token",
+			"value": "",
+			"type": "string"
+		}
+	],
+	"item": [
+		{
+			"name": "Auth",
+			"description": "Authentication: login, verify, refresh, password change, auth info.",
+			"item": [
+				{
+					"name": "Login",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"if (pm.response.code === 200) {",
+									"    var json = pm.response.json();",
+									"    pm.collectionVariables.set('token', json.token);",
+									"    console.log('Token saved to collection variable');",
+									"}"
+								]
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "noauth"
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"username\": \"admin\",\n  \"password\": \"admin\"\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/api/auth/login",
+							"host": ["{{base_url}}"],
+							"path": ["api", "auth", "login"]
+						},
+						"description": "Authenticates and returns a JWT token. Brute-force protected: 5 failed attempts locks the IP for 5 minutes."
+					}
+				},
+				{
+					"name": "Verify Token",
+					"request": {
+						"method": "GET",
+						"url": {
+							"raw": "{{base_url}}/api/auth/verify",
+							"host": ["{{base_url}}"],
+							"path": ["api", "auth", "verify"]
+						},
+						"description": "Verifies the current JWT token is valid. Returns the authenticated username."
+					}
+				},
+				{
+					"name": "Refresh Token",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"if (pm.response.code === 200) {",
+									"    var json = pm.response.json();",
+									"    pm.collectionVariables.set('token', json.token);",
+									"}"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"url": {
+							"raw": "{{base_url}}/api/auth/refresh",
+							"host": ["{{base_url}}"],
+							"path": ["api", "auth", "refresh"]
+						},
+						"description": "Refreshes the current JWT token (issues a new one with extended expiry)."
+					}
+				},
+				{
+					"name": "Change Admin Password",
+					"request": {
+						"method": "PUT",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"password\": \"newSecurePassword123\"\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/api/auth/password",
+							"host": ["{{base_url}}"],
+							"path": ["api", "auth", "password"]
+						},
+						"description": "Changes the admin panel password. Requires admin role. Min 4 characters."
+					}
+				},
+				{
+					"name": "Auth Info",
+					"request": {
+						"auth": {
+							"type": "noauth"
+						},
+						"method": "GET",
+						"url": {
+							"raw": "{{base_url}}/api/auth/info",
+							"host": ["{{base_url}}"],
+							"path": ["api", "auth", "info"]
+						},
+						"description": "Returns the current admin username (public endpoint, no auth required)."
+					}
+				}
+			]
+		},
+		{
+			"name": "Server",
+			"description": "Server status, service health, restart, and container logs.",
+			"item": [
+				{
+					"name": "Server Status",
+					"request": {
+						"method": "GET",
+						"url": {
+							"raw": "{{base_url}}/api/server/status",
+							"host": ["{{base_url}}"],
+							"path": ["api", "server", "status"]
+						},
+						"description": "Returns the PLC4X server Docker container status (running, id, image)."
+					}
+				},
+				{
+					"name": "All Services Status",
+					"request": {
+						"method": "GET",
+						"url": {
+							"raw": "{{base_url}}/api/services/status",
+							"host": ["{{base_url}}"],
+							"path": ["api", "services", "status"]
+						},
+						"description": "Health check for all services: PLC4X Server, InfluxDB, Grafana, Mosquitto, ML Predictor."
+					}
+				},
+				{
+					"name": "Restart Server",
+					"request": {
+						"method": "POST",
+						"url": {
+							"raw": "{{base_url}}/api/server/restart",
+							"host": ["{{base_url}}"],
+							"path": ["api", "server", "restart"]
+						},
+						"description": "Restarts the PLC4X server container. Requires admin role."
+					}
+				},
+				{
+					"name": "Server Logs",
+					"request": {
+						"method": "GET",
+						"url": {
+							"raw": "{{base_url}}/api/server/logs?lines=100",
+							"host": ["{{base_url}}"],
+							"path": ["api", "server", "logs"],
+							"query": [
+								{
+									"key": "lines",
+									"value": "100",
+									"description": "Number of log lines (1-5000, default 50)"
+								}
+							]
+						},
+						"description": "Returns container logs with timestamps. Requires operator role."
+					}
+				}
+			]
+		},
+		{
+			"name": "Backups",
+			"description": "Configuration backup management: list, create, restore, diff, download, upload.",
+			"item": [
+				{
+					"name": "List Backups",
+					"request": {
+						"method": "GET",
+						"url": {
+							"raw": "{{base_url}}/api/backups",
+							"host": ["{{base_url}}"],
+							"path": ["api", "backups"]
+						},
+						"description": "Lists all configuration backups with filename, date, and size. Requires admin role."
+					}
+				},
+				{
+					"name": "Create Backup",
+					"request": {
+						"method": "POST",
+						"url": {
+							"raw": "{{base_url}}/api/backups/create",
+							"host": ["{{base_url}}"],
+							"path": ["api", "backups", "create"]
+						},
+						"description": "Creates a manual backup of the current configuration. Requires admin role."
+					}
+				},
+				{
+					"name": "Backup Changes Summary",
+					"request": {
+						"method": "GET",
+						"url": {
+							"raw": "{{base_url}}/api/backups/config_20260330_120000.yml/changes",
+							"host": ["{{base_url}}"],
+							"path": ["api", "backups", "config_20260330_120000.yml", "changes"]
+						},
+						"description": "Returns a human-readable summary of changes between this backup and the previous one."
+					}
+				},
+				{
+					"name": "Backup Content",
+					"request": {
+						"method": "GET",
+						"url": {
+							"raw": "{{base_url}}/api/backups/config_20260330_120000.yml/content",
+							"host": ["{{base_url}}"],
+							"path": ["api", "backups", "config_20260330_120000.yml", "content"]
+						},
+						"description": "Returns the raw YAML content of a backup file."
+					}
+				},
+				{
+					"name": "Backup Download",
+					"request": {
+						"method": "GET",
+						"url": {
+							"raw": "{{base_url}}/api/backups/config_20260330_120000.yml/download",
+							"host": ["{{base_url}}"],
+							"path": ["api", "backups", "config_20260330_120000.yml", "download"]
+						},
+						"description": "Downloads a backup file as a YAML attachment."
+					}
+				},
+				{
+					"name": "Backup Diff vs Current",
+					"request": {
+						"method": "GET",
+						"url": {
+							"raw": "{{base_url}}/api/backups/config_20260330_120000.yml/diff",
+							"host": ["{{base_url}}"],
+							"path": ["api", "backups", "config_20260330_120000.yml", "diff"]
+						},
+						"description": "Returns a unified diff between a backup and the current active configuration."
+					}
+				},
+				{
+					"name": "Restore Backup",
+					"request": {
+						"method": "POST",
+						"url": {
+							"raw": "{{base_url}}/api/backups/config_20260330_120000.yml/restore",
+							"host": ["{{base_url}}"],
+							"path": ["api", "backups", "config_20260330_120000.yml", "restore"]
+						},
+						"description": "Restores configuration from a backup file. Creates a backup of current config first."
+					}
+				},
+				{
+					"name": "Cleanup Old Backups",
+					"request": {
+						"method": "POST",
+						"url": {
+							"raw": "{{base_url}}/api/backups/cleanup",
+							"host": ["{{base_url}}"],
+							"path": ["api", "backups", "cleanup"]
+						},
+						"description": "Trims old backups, keeping only the most recent ones."
+					}
+				},
+				{
+					"name": "Upload & Restore YAML",
+					"request": {
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "formdata",
+							"formdata": [
+								{
+									"key": "file",
+									"type": "file",
+									"src": "",
+									"description": "YAML configuration file (.yml or .yaml)"
+								}
+							]
+						},
+						"url": {
+							"raw": "{{base_url}}/api/backups/upload",
+							"host": ["{{base_url}}"],
+							"path": ["api", "backups", "upload"]
+						},
+						"description": "Restores configuration from an uploaded YAML file. Backs up current config before restoring."
+					}
+				}
+			]
+		},
+		{
+			"name": "Config",
+			"description": "Full configuration and OPC-UA server settings.",
+			"item": [
+				{
+					"name": "Get Config",
+					"request": {
+						"method": "GET",
+						"url": {
+							"raw": "{{base_url}}/api/config",
+							"host": ["{{base_url}}"],
+							"path": ["api", "config"]
+						},
+						"description": "Returns the full PLC4X configuration (server settings + all devices)."
+					}
+				},
+				{
+					"name": "Save Full Config",
+					"request": {
+						"method": "PUT",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"name\": \"PLC4X OPC-UA Server\",\n  \"version\": \"0.13.1\",\n  \"tcpPort\": 12687,\n  \"disableInsecureEndpoint\": false,\n  \"dir\": \"/app/config\",\n  \"devices\": [\n    {\n      \"name\": \"Siemens-S7-1500\",\n      \"connectionString\": \"s7://192.168.1.10\",\n      \"plant\": \"PlantA\",\n      \"enabled\": true,\n      \"pollInterval\": 5,\n      \"tags\": [\n        {\n          \"alias\": \"Temperature\",\n          \"address\": \"%DB1:0:REAL\"\n        },\n        {\n          \"alias\": \"MotorSpeed\",\n          \"address\": \"%DB1:4:DINT\"\n        }\n      ]\n    }\n  ]\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/api/config",
+							"host": ["{{base_url}}"],
+							"path": ["api", "config"]
+						},
+						"description": "Saves the complete configuration. Requires admin role. Validates all device tags."
+					}
+				},
+				{
+					"name": "Update Server Settings",
+					"request": {
+						"method": "PUT",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"name\": \"PLC4X OPC-UA Server\",\n  \"version\": \"0.13.1\",\n  \"tcpPort\": 12687,\n  \"disableInsecureEndpoint\": false\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/api/config/server",
+							"host": ["{{base_url}}"],
+							"path": ["api", "config", "server"]
+						},
+						"description": "Updates OPC-UA server settings only (name, version, tcpPort, disableInsecureEndpoint, dir). Requires admin role."
+					}
+				}
+			]
+		},
+		{
+			"name": "Devices",
+			"description": "Device CRUD operations, test connection, and tag discovery.",
+			"item": [
+				{
+					"name": "List Devices",
+					"request": {
+						"method": "GET",
+						"url": {
+							"raw": "{{base_url}}/api/devices",
+							"host": ["{{base_url}}"],
+							"path": ["api", "devices"]
+						},
+						"description": "Lists all devices, filtered by the user's allowed plants (RBAC)."
+					}
+				},
+				{
+					"name": "Add Device",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"name\": \"Siemens-S7-1500\",\n  \"connectionString\": \"s7://192.168.1.10\",\n  \"plant\": \"PlantA\",\n  \"enabled\": true,\n  \"pollInterval\": 5,\n  \"allowWrite\": false,\n  \"tags\": [\n    {\n      \"alias\": \"Temperature\",\n      \"address\": \"%DB1:0:REAL\"\n    },\n    {\n      \"alias\": \"MotorSpeed\",\n      \"address\": \"%DB1:4:DINT\"\n    }\n  ]\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/api/devices",
+							"host": ["{{base_url}}"],
+							"path": ["api", "devices"]
+						},
+						"description": "Adds a new device. Requires admin role. Validates name and tag addresses."
+					}
+				},
+				{
+					"name": "Update Device",
+					"request": {
+						"method": "PUT",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"name\": \"Siemens-S7-1500\",\n  \"connectionString\": \"s7://192.168.1.10\",\n  \"plant\": \"PlantA\",\n  \"enabled\": true,\n  \"pollInterval\": 3,\n  \"allowWrite\": true,\n  \"tags\": [\n    {\n      \"alias\": \"Temperature\",\n      \"address\": \"%DB1:0:REAL\"\n    },\n    {\n      \"alias\": \"MotorSpeed\",\n      \"address\": \"%DB1:4:DINT\"\n    },\n    {\n      \"alias\": \"Pressure\",\n      \"address\": \"%DB1:8:REAL\"\n    }\n  ]\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/api/devices/Siemens-S7-1500",
+							"host": ["{{base_url}}"],
+							"path": ["api", "devices", "Siemens-S7-1500"]
+						},
+						"description": "Updates an existing device by name. Requires admin role."
+					}
+				},
+				{
+					"name": "Delete Device",
+					"request": {
+						"method": "DELETE",
+						"url": {
+							"raw": "{{base_url}}/api/devices/Siemens-S7-1500",
+							"host": ["{{base_url}}"],
+							"path": ["api", "devices", "Siemens-S7-1500"]
+						},
+						"description": "Removes a device by name. Requires admin role."
+					}
+				},
+				{
+					"name": "Test Connection",
+					"request": {
+						"method": "POST",
+						"url": {
+							"raw": "{{base_url}}/api/devices/Siemens-S7-1500/test-connection",
+							"host": ["{{base_url}}"],
+							"path": ["api", "devices", "Siemens-S7-1500", "test-connection"]
+						},
+						"description": "Tests device connectivity via poller cache or OPC-UA server. Returns status, tags OK/error counts."
+					}
+				},
+				{
+					"name": "Discover Tags",
+					"request": {
+						"method": "POST",
+						"url": {
+							"raw": "{{base_url}}/api/devices/Siemens-S7-1500/discover",
+							"host": ["{{base_url}}"],
+							"path": ["api", "devices", "Siemens-S7-1500", "discover"]
+						},
+						"description": "Browses available tags for a device. Uses pylogix for EtherNet/IP, OPC-UA browse for others."
+					}
+				}
+			]
+		},
+		{
+			"name": "Tags",
+			"description": "Tag CRUD and alarm threshold management.",
+			"item": [
+				{
+					"name": "List Tags",
+					"request": {
+						"method": "GET",
+						"url": {
+							"raw": "{{base_url}}/api/devices/Siemens-S7-1500/tags",
+							"host": ["{{base_url}}"],
+							"path": ["api", "devices", "Siemens-S7-1500", "tags"]
+						},
+						"description": "Lists all tags for a device. Plant-access checked."
+					}
+				},
+				{
+					"name": "Add Tag",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"alias\": \"Vibration\",\n  \"address\": \"%DB1:12:REAL\"\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/api/devices/Siemens-S7-1500/tags",
+							"host": ["{{base_url}}"],
+							"path": ["api", "devices", "Siemens-S7-1500", "tags"]
+						},
+						"description": "Adds a tag to a device. Validates alias name and address format. Requires admin role."
+					}
+				},
+				{
+					"name": "Delete Tag",
+					"request": {
+						"method": "DELETE",
+						"url": {
+							"raw": "{{base_url}}/api/devices/Siemens-S7-1500/tags/Vibration",
+							"host": ["{{base_url}}"],
+							"path": ["api", "devices", "Siemens-S7-1500", "tags", "Vibration"]
+						},
+						"description": "Removes a tag from a device by alias. Requires admin role."
+					}
+				},
+				{
+					"name": "Set Tag Alarm Thresholds",
+					"request": {
+						"method": "PUT",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"warningLow\": 10,\n  \"warningHigh\": 80,\n  \"criticalLow\": 5,\n  \"criticalHigh\": 95\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/api/devices/Siemens-S7-1500/tags/Temperature/alarms",
+							"host": ["{{base_url}}"],
+							"path": ["api", "devices", "Siemens-S7-1500", "tags", "Temperature", "alarms"]
+						},
+						"description": "Sets alarm thresholds for a tag. Pass empty {} to clear. Supports conditional profiles."
+					}
+				},
+				{
+					"name": "Set Conditional Alarm Profiles",
+					"request": {
+						"method": "PUT",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"conditionDevice\": \"Siemens-S7-1500\",\n  \"conditionTag\": \"ProductCode\",\n  \"warningLow\": 15,\n  \"warningHigh\": 75,\n  \"criticalLow\": 5,\n  \"criticalHigh\": 90,\n  \"profiles\": [\n    {\n      \"whenValue\": 1,\n      \"label\": \"Product A\",\n      \"warningLow\": 20,\n      \"warningHigh\": 30,\n      \"criticalLow\": 15,\n      \"criticalHigh\": 35\n    },\n    {\n      \"whenValue\": 2,\n      \"label\": \"Product B\",\n      \"warningLow\": 40,\n      \"warningHigh\": 60,\n      \"criticalLow\": 35,\n      \"criticalHigh\": 65\n    }\n  ]\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/api/devices/Siemens-S7-1500/tags/Temperature/alarms",
+							"host": ["{{base_url}}"],
+							"path": ["api", "devices", "Siemens-S7-1500", "tags", "Temperature", "alarms"]
+						},
+						"description": "Sets conditional alarm profiles where thresholds depend on another tag's value."
+					}
+				}
+			]
+		},
+		{
+			"name": "Calculated Tags",
+			"description": "Virtual calculated tags with formulas.",
+			"item": [
+				{
+					"name": "List Calculated Tags",
+					"request": {
+						"method": "GET",
+						"url": {
+							"raw": "{{base_url}}/api/devices/Siemens-S7-1500/calculated",
+							"host": ["{{base_url}}"],
+							"path": ["api", "devices", "Siemens-S7-1500", "calculated"]
+						},
+						"description": "Lists calculated tags for a device. Plant-access checked."
+					}
+				},
+				{
+					"name": "Add Calculated Tag",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"alias\": \"TempFahrenheit\",\n  \"formula\": \"Temperature * 9 / 5 + 32\"\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/api/devices/Siemens-S7-1500/calculated",
+							"host": ["{{base_url}}"],
+							"path": ["api", "devices", "Siemens-S7-1500", "calculated"]
+						},
+						"description": "Adds a calculated tag with a Python expression formula. Requires admin role."
+					}
+				},
+				{
+					"name": "Update Calculated Tag",
+					"request": {
+						"method": "PUT",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"formula\": \"(Temperature - 32) * 5 / 9\"\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/api/devices/Siemens-S7-1500/calculated/TempFahrenheit",
+							"host": ["{{base_url}}"],
+							"path": ["api", "devices", "Siemens-S7-1500", "calculated", "TempFahrenheit"]
+						},
+						"description": "Updates a calculated tag's formula. Requires admin role."
+					}
+				},
+				{
+					"name": "Delete Calculated Tag",
+					"request": {
+						"method": "DELETE",
+						"url": {
+							"raw": "{{base_url}}/api/devices/Siemens-S7-1500/calculated/TempFahrenheit",
+							"host": ["{{base_url}}"],
+							"path": ["api", "devices", "Siemens-S7-1500", "calculated", "TempFahrenheit"]
+						},
+						"description": "Removes a calculated tag. Requires admin role."
+					}
+				},
+				{
+					"name": "Validate Formula",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"formula\": \"Temperature * 9 / 5 + 32\",\n  \"testValues\": {\n    \"Temperature\": 25.0\n  }\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/api/formula/validate",
+							"host": ["{{base_url}}"],
+							"path": ["api", "formula", "validate"]
+						},
+						"description": "Validates a formula syntax and optionally evaluates it with test values."
+					}
+				}
+			]
+		},
+		{
+			"name": "Demo",
+			"description": "Demo data loading.",
+			"item": [
+				{
+					"name": "Load Demo Devices",
+					"request": {
+						"method": "POST",
+						"url": {
+							"raw": "{{base_url}}/api/demo/load",
+							"host": ["{{base_url}}"],
+							"path": ["api", "demo", "load"]
+						},
+						"description": "Loads pre-configured demo devices from demo-devices.json. Skips existing names. Requires admin."
+					}
+				},
+				{
+					"name": "Seed Full Demo Environment",
+					"request": {
+						"method": "POST",
+						"url": {
+							"raw": "{{base_url}}/api/demo/seed",
+							"host": ["{{base_url}}"],
+							"path": ["api", "demo", "seed"]
+						},
+						"description": "Seeds the full demo environment: devices, tags, alarms, calculated tags, OEE, ML, logbook. Overwrites existing config."
+					}
+				}
+			]
+		},
+		{
+			"name": "Live Data",
+			"description": "Real-time tag values, write operations, and write audit log.",
+			"item": [
+				{
+					"name": "Live Read (All Devices)",
+					"request": {
+						"method": "GET",
+						"url": {
+							"raw": "{{base_url}}/api/live/read",
+							"host": ["{{base_url}}"],
+							"path": ["api", "live", "read"]
+						},
+						"description": "Returns live tag values from the background poller cache. Plant-filtered by user role."
+					}
+				},
+				{
+					"name": "Live Read (Single Device)",
+					"request": {
+						"method": "GET",
+						"url": {
+							"raw": "{{base_url}}/api/live/read/Siemens-S7-1500",
+							"host": ["{{base_url}}"],
+							"path": ["api", "live", "read", "Siemens-S7-1500"]
+						},
+						"description": "Returns live tag values for a specific device."
+					}
+				},
+				{
+					"name": "Live Read (Query Param)",
+					"request": {
+						"method": "GET",
+						"url": {
+							"raw": "{{base_url}}/api/live/read?device=Siemens-S7-1500",
+							"host": ["{{base_url}}"],
+							"path": ["api", "live", "read"],
+							"query": [
+								{
+									"key": "device",
+									"value": "Siemens-S7-1500",
+									"description": "Filter by device name"
+								}
+							]
+						},
+						"description": "Returns live tag values filtered by device query parameter."
+					}
+				},
+				{
+					"name": "Write Tag Value",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"device\": \"Siemens-S7-1500\",\n  \"tag\": \"MotorSpeed\",\n  \"value\": 1500\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/api/live/write",
+							"host": ["{{base_url}}"],
+							"path": ["api", "live", "write"]
+						},
+						"description": "Writes a value to a PLC tag via OPC-UA. Blocked if PLC_READONLY=true. Requires operator role and device allowWrite=true."
+					}
+				},
+				{
+					"name": "Write Audit Log",
+					"request": {
+						"method": "GET",
+						"url": {
+							"raw": "{{base_url}}/api/live/write-log?lines=100",
+							"host": ["{{base_url}}"],
+							"path": ["api", "live", "write-log"],
+							"query": [
+								{
+									"key": "lines",
+									"value": "100",
+									"description": "Number of entries (1-1000, default 100)"
+								}
+							]
+						},
+						"description": "Returns the write audit log from SQLite (newest first). Requires operator role."
+					}
+				}
+			]
+		},
+		{
+			"name": "PLC4X Version",
+			"description": "PLC4X uber-jar version management, update, rollback, and connection templates.",
+			"item": [
+				{
+					"name": "Current PLC4X Version",
+					"request": {
+						"method": "GET",
+						"url": {
+							"raw": "{{base_url}}/api/plc4x/version",
+							"host": ["{{base_url}}"],
+							"path": ["api", "plc4x", "version"]
+						},
+						"description": "Returns the current PLC4X uber-jar version and backup version."
+					}
+				},
+				{
+					"name": "Latest PLC4X Version",
+					"request": {
+						"method": "GET",
+						"url": {
+							"raw": "{{base_url}}/api/plc4x/latest-version",
+							"host": ["{{base_url}}"],
+							"path": ["api", "plc4x", "latest-version"]
+						},
+						"description": "Checks Maven Central for the latest PLC4X OPC-UA Server version."
+					}
+				},
+				{
+					"name": "Update PLC4X Jar",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"version\": \"0.13.1\"\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/api/plc4x/update",
+							"host": ["{{base_url}}"],
+							"path": ["api", "plc4x", "update"]
+						},
+						"description": "Downloads a new PLC4X jar from Maven Central and restarts the server. Requires admin role."
+					}
+				},
+				{
+					"name": "Rollback PLC4X Jar",
+					"request": {
+						"method": "POST",
+						"url": {
+							"raw": "{{base_url}}/api/plc4x/rollback",
+							"host": ["{{base_url}}"],
+							"path": ["api", "plc4x", "rollback"]
+						},
+						"description": "Rolls back to the previous PLC4X jar version from the .bak file. Requires admin role."
+					}
+				},
+				{
+					"name": "Connection Templates",
+					"request": {
+						"method": "GET",
+						"url": {
+							"raw": "{{base_url}}/api/templates",
+							"host": ["{{base_url}}"],
+							"path": ["api", "templates"]
+						},
+						"description": "Returns connection string templates for all supported protocols (S7, Modbus, OPC-UA, EtherNet/IP, etc.)."
+					}
+				}
+			]
+		},
+		{
+			"name": "Manager Version",
+			"description": "PLC4X Manager application version, updates, and rollback (git-based).",
+			"item": [
+				{
+					"name": "Manager Version",
+					"request": {
+						"method": "GET",
+						"url": {
+							"raw": "{{base_url}}/api/manager/version",
+							"host": ["{{base_url}}"],
+							"path": ["api", "manager", "version"]
+						},
+						"description": "Returns the current Manager version (git tag + commit + branch)."
+					}
+				},
+				{
+					"name": "Check for Updates",
+					"request": {
+						"method": "GET",
+						"url": {
+							"raw": "{{base_url}}/api/manager/check-update",
+							"host": ["{{base_url}}"],
+							"path": ["api", "manager", "check-update"]
+						},
+						"description": "Fetches from GitHub and compares current vs latest. Returns changelog and commits behind. Requires admin."
+					}
+				},
+				{
+					"name": "Apply Update",
+					"request": {
+						"method": "POST",
+						"url": {
+							"raw": "{{base_url}}/api/manager/update",
+							"host": ["{{base_url}}"],
+							"path": ["api", "manager", "update"]
+						},
+						"description": "Pulls latest changes from GitHub and rebuilds containers in background. Requires admin."
+					}
+				},
+				{
+					"name": "Rollback Manager",
+					"request": {
+						"method": "POST",
+						"url": {
+							"raw": "{{base_url}}/api/manager/rollback",
+							"host": ["{{base_url}}"],
+							"path": ["api", "manager", "rollback"]
+						},
+						"description": "Rolls back to the previous tagged git version and rebuilds. Requires admin."
+					}
+				},
+				{
+					"name": "Update Status",
+					"request": {
+						"method": "GET",
+						"url": {
+							"raw": "{{base_url}}/api/manager/update-status",
+							"host": ["{{base_url}}"],
+							"path": ["api", "manager", "update-status"]
+						},
+						"description": "Polls the status of a background update/rollback rebuild. Requires admin."
+					}
+				}
+			]
+		},
+		{
+			"name": "Users (OPC-UA)",
+			"description": "OPC-UA user management (stored in .jibberish password file).",
+			"item": [
+				{
+					"name": "List Users",
+					"request": {
+						"method": "GET",
+						"url": {
+							"raw": "{{base_url}}/api/users",
+							"host": ["{{base_url}}"],
+							"path": ["api", "users"]
+						},
+						"description": "Lists all OPC-UA users (without password hashes). Requires admin role."
+					}
+				},
+				{
+					"name": "Add User",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"username\": \"operator1\",\n  \"password\": \"securePass123\",\n  \"security\": \"admin-group\"\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/api/users",
+							"host": ["{{base_url}}"],
+							"path": ["api", "users"]
+						},
+						"description": "Adds a new OPC-UA user with hashed password. Requires admin role."
+					}
+				},
+				{
+					"name": "Update User",
+					"request": {
+						"method": "PUT",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"password\": \"newPassword456\",\n  \"security\": \"operator-group\"\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/api/users/operator1",
+							"host": ["{{base_url}}"],
+							"path": ["api", "users", "operator1"]
+						},
+						"description": "Updates an OPC-UA user's password and/or security group. Requires admin role."
+					}
+				},
+				{
+					"name": "Delete User",
+					"request": {
+						"method": "DELETE",
+						"url": {
+							"raw": "{{base_url}}/api/users/operator1",
+							"host": ["{{base_url}}"],
+							"path": ["api", "users", "operator1"]
+						},
+						"description": "Removes an OPC-UA user. Cannot delete the default admin user. Requires admin role."
+					}
+				}
+			]
+		},
+		{
+			"name": "Security",
+			"description": "OPC-UA security: keystore password, PKI certificate management.",
+			"item": [
+				{
+					"name": "Security Status",
+					"request": {
+						"method": "GET",
+						"url": {
+							"raw": "{{base_url}}/api/security/status",
+							"host": ["{{base_url}}"],
+							"path": ["api", "security", "status"]
+						},
+						"description": "Returns security initialization status (password file, keystore, PKI directory)."
+					}
+				},
+				{
+					"name": "Change Security Password",
+					"request": {
+						"method": "PUT",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"password\": \"newKeystorePassword\"\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/api/security/password",
+							"host": ["{{base_url}}"],
+							"path": ["api", "security", "password"]
+						},
+						"description": "Changes the keystore security password (Jetty OBF encoded). Requires admin role. Restart server to apply."
+					}
+				},
+				{
+					"name": "List Trusted Certificates",
+					"request": {
+						"method": "GET",
+						"url": {
+							"raw": "{{base_url}}/api/security/certificates/trusted",
+							"host": ["{{base_url}}"],
+							"path": ["api", "security", "certificates", "trusted"]
+						},
+						"description": "Lists trusted certificates in the PKI trusted directory."
+					}
+				},
+				{
+					"name": "List Rejected Certificates",
+					"request": {
+						"method": "GET",
+						"url": {
+							"raw": "{{base_url}}/api/security/certificates/rejected",
+							"host": ["{{base_url}}"],
+							"path": ["api", "security", "certificates", "rejected"]
+						},
+						"description": "Lists rejected certificates in the PKI rejected directory."
+					}
+				},
+				{
+					"name": "Trust Certificate",
+					"request": {
+						"method": "POST",
+						"url": {
+							"raw": "{{base_url}}/api/security/certificates/trust/client-cert.der",
+							"host": ["{{base_url}}"],
+							"path": ["api", "security", "certificates", "trust", "client-cert.der"]
+						},
+						"description": "Moves a certificate from rejected to trusted. Requires admin role."
+					}
+				},
+				{
+					"name": "Reject Certificate",
+					"request": {
+						"method": "POST",
+						"url": {
+							"raw": "{{base_url}}/api/security/certificates/reject/client-cert.der",
+							"host": ["{{base_url}}"],
+							"path": ["api", "security", "certificates", "reject", "client-cert.der"]
+						},
+						"description": "Moves a certificate from trusted to rejected. Requires admin role."
+					}
+				},
+				{
+					"name": "Delete Certificate",
+					"request": {
+						"method": "DELETE",
+						"url": {
+							"raw": "{{base_url}}/api/security/certificates/client-cert.der",
+							"host": ["{{base_url}}"],
+							"path": ["api", "security", "certificates", "client-cert.der"]
+						},
+						"description": "Deletes a certificate from either trusted or rejected directory. Requires admin role."
+					}
+				}
+			]
+		},
+		{
+			"name": "Data & Export",
+			"description": "Tag history, CSV/PDF export, custom data write, and Grafana proxy.",
+			"item": [
+				{
+					"name": "Tag History",
+					"request": {
+						"method": "GET",
+						"url": {
+							"raw": "{{base_url}}/api/tags/history?device=Siemens-S7-1500&tag=Temperature&hours=1",
+							"host": ["{{base_url}}"],
+							"path": ["api", "tags", "history"],
+							"query": [
+								{
+									"key": "device",
+									"value": "Siemens-S7-1500",
+									"description": "Device name (required)"
+								},
+								{
+									"key": "tag",
+									"value": "Temperature",
+									"description": "Tag alias (required)"
+								},
+								{
+									"key": "hours",
+									"value": "1",
+									"description": "Time range in hours (1-8760, default 1)"
+								}
+							]
+						},
+						"description": "Returns tag value history from InfluxDB with smart bucket selection and caching."
+					}
+				},
+				{
+					"name": "Export CSV",
+					"request": {
+						"method": "GET",
+						"url": {
+							"raw": "{{base_url}}/api/export/csv?device=Siemens-S7-1500&hours=24",
+							"host": ["{{base_url}}"],
+							"path": ["api", "export", "csv"],
+							"query": [
+								{
+									"key": "device",
+									"value": "Siemens-S7-1500",
+									"description": "Filter by device name (optional)"
+								},
+								{
+									"key": "tag",
+									"value": "",
+									"description": "Filter by tag alias (optional)",
+									"disabled": true
+								},
+								{
+									"key": "plant",
+									"value": "",
+									"description": "Filter by plant name (optional)",
+									"disabled": true
+								},
+								{
+									"key": "hours",
+									"value": "24",
+									"description": "Time range in hours (1-8760, default 24)"
+								}
+							]
+						},
+						"description": "Exports tag history from InfluxDB as a CSV file download."
+					}
+				},
+				{
+					"name": "Export PDF Report",
+					"request": {
+						"method": "GET",
+						"url": {
+							"raw": "{{base_url}}/api/export/pdf?hours=24",
+							"host": ["{{base_url}}"],
+							"path": ["api", "export", "pdf"],
+							"query": [
+								{
+									"key": "device",
+									"value": "",
+									"description": "Filter by device (optional)",
+									"disabled": true
+								},
+								{
+									"key": "plant",
+									"value": "",
+									"description": "Filter by plant (optional)",
+									"disabled": true
+								},
+								{
+									"key": "hours",
+									"value": "24",
+									"description": "Time range in hours (1-8760, default 24)"
+								}
+							]
+						},
+						"description": "Generates a PDF report with device status, tag statistics, and alarm history."
+					}
+				},
+				{
+					"name": "Write Data to InfluxDB",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"measurement\": \"custom_metrics\",\n  \"tags\": {\n    \"device\": \"Siemens-S7-1500\",\n    \"plant\": \"PlantA\"\n  },\n  \"fields\": {\n    \"oee\": 0.85,\n    \"availability\": 0.92\n  }\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/api/data/write",
+							"host": ["{{base_url}}"],
+							"path": ["api", "data", "write"]
+						},
+						"description": "Writes custom data points to InfluxDB (SYNCHRONOUS mode). Supports single or batch array. Also publishes to MQTT. Requires operator role."
+					}
+				},
+				{
+					"name": "Grafana Proxy",
+					"request": {
+						"method": "GET",
+						"url": {
+							"raw": "{{base_url}}/grafana/api/health",
+							"host": ["{{base_url}}"],
+							"path": ["grafana", "api", "health"]
+						},
+						"description": "Proxies requests to Grafana through the authenticated admin panel. Restricted to /d/, /api/, and /public/ paths."
+					}
+				}
+			]
+		},
+		{
+			"name": "Alarms",
+			"description": "Active alarms, alarm history, and acknowledgement.",
+			"item": [
+				{
+					"name": "Get Alarms",
+					"request": {
+						"method": "GET",
+						"url": {
+							"raw": "{{base_url}}/api/alarms",
+							"host": ["{{base_url}}"],
+							"path": ["api", "alarms"]
+						},
+						"description": "Returns active alarms and recent history (last 500). Filtered by user's allowed plants."
+					}
+				},
+				{
+					"name": "Acknowledge Alarm",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"key\": \"Siemens-S7-1500/Temperature\"\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/api/alarms/acknowledge",
+							"host": ["{{base_url}}"],
+							"path": ["api", "alarms", "acknowledge"]
+						},
+						"description": "Acknowledges a single active alarm by key (device/tag). Silences the alarm sound. Requires operator role."
+					}
+				},
+				{
+					"name": "Acknowledge All Alarms",
+					"request": {
+						"method": "POST",
+						"url": {
+							"raw": "{{base_url}}/api/alarms/acknowledge-all",
+							"host": ["{{base_url}}"],
+							"path": ["api", "alarms", "acknowledge-all"]
+						},
+						"description": "Acknowledges all active alarms (filtered by user's allowed plants). Requires operator role."
+					}
+				}
+			]
+		},
+		{
+			"name": "OEE",
+			"description": "Overall Equipment Effectiveness configuration, calculation, and trend.",
+			"item": [
+				{
+					"name": "Get OEE Config",
+					"request": {
+						"method": "GET",
+						"url": {
+							"raw": "{{base_url}}/api/devices/Siemens-S7-1500/oee-config",
+							"host": ["{{base_url}}"],
+							"path": ["api", "devices", "Siemens-S7-1500", "oee-config"]
+						},
+						"description": "Returns OEE configuration for a device. Plant-access checked."
+					}
+				},
+				{
+					"name": "Set OEE Config",
+					"request": {
+						"method": "PUT",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"enabled\": true,\n  \"runningTag\": \"MachineRunning\",\n  \"runningValue\": 1,\n  \"productionCountTag\": \"PartCount\",\n  \"rejectCountTag\": \"RejectCount\",\n  \"idealCycleTime\": 30.0,\n  \"plannedHoursPerDay\": 16\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/api/devices/Siemens-S7-1500/oee-config",
+							"host": ["{{base_url}}"],
+							"path": ["api", "devices", "Siemens-S7-1500", "oee-config"]
+						},
+						"description": "Sets OEE configuration for a device. Validates that tag aliases exist. Requires admin role."
+					}
+				},
+				{
+					"name": "Calculate OEE",
+					"request": {
+						"method": "GET",
+						"url": {
+							"raw": "{{base_url}}/api/oee/calculate?device=Siemens-S7-1500&hours=24",
+							"host": ["{{base_url}}"],
+							"path": ["api", "oee", "calculate"],
+							"query": [
+								{
+									"key": "device",
+									"value": "Siemens-S7-1500",
+									"description": "Device name (required)"
+								},
+								{
+									"key": "hours",
+									"value": "24",
+									"description": "Time range in hours (1-8760, default 24)"
+								}
+							]
+						},
+						"description": "Calculates OEE metrics (Availability x Performance x Quality) from InfluxDB data."
+					}
+				},
+				{
+					"name": "OEE Trend",
+					"request": {
+						"method": "GET",
+						"url": {
+							"raw": "{{base_url}}/api/oee/trend?device=Siemens-S7-1500&hours=24",
+							"host": ["{{base_url}}"],
+							"path": ["api", "oee", "trend"],
+							"query": [
+								{
+									"key": "device",
+									"value": "Siemens-S7-1500",
+									"description": "Device name (required)"
+								},
+								{
+									"key": "hours",
+									"value": "24",
+									"description": "Time range in hours (1-8760, default 24)"
+								}
+							]
+						},
+						"description": "Returns OEE availability trend data in hourly or daily buckets."
+					}
+				}
+			]
+		},
+		{
+			"name": "HMI",
+			"description": "HMI screen editor: plants, areas, equipment, screens, image upload.",
+			"item": [
+				{
+					"name": "Get HMI Config",
+					"request": {
+						"method": "GET",
+						"url": {
+							"raw": "{{base_url}}/api/hmi/config",
+							"host": ["{{base_url}}"],
+							"path": ["api", "hmi", "config"]
+						},
+						"description": "Returns the full HMI configuration (plants, areas, equipment, screens)."
+					}
+				},
+				{
+					"name": "Save Full HMI Config",
+					"request": {
+						"method": "PUT",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"plants\": [\n    {\n      \"id\": \"plant-1\",\n      \"name\": \"Main Plant\",\n      \"areas\": [\n        {\n          \"id\": \"area-1\",\n          \"name\": \"Assembly Line\",\n          \"equipment\": []\n        }\n      ]\n    }\n  ]\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/api/hmi/config",
+							"host": ["{{base_url}}"],
+							"path": ["api", "hmi", "config"]
+						},
+						"description": "Saves the full HMI configuration (auto-save from editor). Requires admin role."
+					}
+				},
+				{
+					"name": "Create Plant",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"name\": \"Main Plant\"\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/api/hmi/plants",
+							"host": ["{{base_url}}"],
+							"path": ["api", "hmi", "plants"]
+						},
+						"description": "Creates a new HMI plant. Returns the created plant with auto-generated id. Requires admin role."
+					}
+				},
+				{
+					"name": "Update Plant",
+					"request": {
+						"method": "PUT",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"name\": \"Updated Plant Name\"\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/api/hmi/plants/plant-1",
+							"host": ["{{base_url}}"],
+							"path": ["api", "hmi", "plants", "plant-1"]
+						},
+						"description": "Updates a plant's name. Requires admin role."
+					}
+				},
+				{
+					"name": "Delete Plant",
+					"request": {
+						"method": "DELETE",
+						"url": {
+							"raw": "{{base_url}}/api/hmi/plants/plant-1",
+							"host": ["{{base_url}}"],
+							"path": ["api", "hmi", "plants", "plant-1"]
+						},
+						"description": "Deletes a plant and all its children (areas, equipment). Requires admin role."
+					}
+				},
+				{
+					"name": "Create Area",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"name\": \"Assembly Line 1\"\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/api/hmi/plants/plant-1/areas",
+							"host": ["{{base_url}}"],
+							"path": ["api", "hmi", "plants", "plant-1", "areas"]
+						},
+						"description": "Creates a new area under a plant. Returns the created area with auto-generated id. Requires admin role."
+					}
+				},
+				{
+					"name": "Update Area",
+					"request": {
+						"method": "PUT",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"name\": \"Updated Area Name\"\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/api/hmi/areas/area-1",
+							"host": ["{{base_url}}"],
+							"path": ["api", "hmi", "areas", "area-1"]
+						},
+						"description": "Updates an area's name. Requires admin role."
+					}
+				},
+				{
+					"name": "Delete Area",
+					"request": {
+						"method": "DELETE",
+						"url": {
+							"raw": "{{base_url}}/api/hmi/areas/area-1",
+							"host": ["{{base_url}}"],
+							"path": ["api", "hmi", "areas", "area-1"]
+						},
+						"description": "Deletes an area and all its equipment. Requires admin role."
+					}
+				},
+				{
+					"name": "Create Equipment",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"name\": \"Conveyor Belt #1\",\n  \"device\": \"Siemens-S7-1500\"\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/api/hmi/areas/area-1/equipment",
+							"host": ["{{base_url}}"],
+							"path": ["api", "hmi", "areas", "area-1", "equipment"]
+						},
+						"description": "Creates new equipment under an area with default 1280x720 screen. Requires admin role."
+					}
+				},
+				{
+					"name": "Update Equipment",
+					"request": {
+						"method": "PUT",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"name\": \"Conveyor Belt #1 (Updated)\",\n  \"device\": \"Modbus-PLC-1\"\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/api/hmi/equipment/equip-1",
+							"host": ["{{base_url}}"],
+							"path": ["api", "hmi", "equipment", "equip-1"]
+						},
+						"description": "Updates equipment name and/or device binding. Requires admin role."
+					}
+				},
+				{
+					"name": "Delete Equipment",
+					"request": {
+						"method": "DELETE",
+						"url": {
+							"raw": "{{base_url}}/api/hmi/equipment/equip-1",
+							"host": ["{{base_url}}"],
+							"path": ["api", "hmi", "equipment", "equip-1"]
+						},
+						"description": "Deletes equipment. Requires admin role."
+					}
+				},
+				{
+					"name": "Save Screen Config",
+					"request": {
+						"method": "PUT",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"width\": 1920,\n  \"height\": 1080,\n  \"backgroundImage\": \"/static/hmi-images/factory-floor.png\",\n  \"elements\": [\n    {\n      \"type\": \"label\",\n      \"x\": 100,\n      \"y\": 50,\n      \"text\": \"Line Status\",\n      \"fontSize\": 24\n    },\n    {\n      \"type\": \"value\",\n      \"x\": 200,\n      \"y\": 120,\n      \"tag\": \"Temperature\",\n      \"fontSize\": 18\n    }\n  ]\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/api/hmi/equipment/equip-1/screen",
+							"host": ["{{base_url}}"],
+							"path": ["api", "hmi", "equipment", "equip-1", "screen"]
+						},
+						"description": "Saves the screen configuration (elements, background, dimensions) for an equipment. Requires admin role."
+					}
+				},
+				{
+					"name": "Upload Background Image",
+					"request": {
+						"method": "POST",
+						"body": {
+							"mode": "formdata",
+							"formdata": [
+								{
+									"key": "file",
+									"type": "file",
+									"src": "",
+									"description": "Image file (PNG, JPG, SVG, GIF, WebP)"
+								}
+							]
+						},
+						"url": {
+							"raw": "{{base_url}}/api/hmi/upload-image",
+							"host": ["{{base_url}}"],
+							"path": ["api", "hmi", "upload-image"]
+						},
+						"description": "Uploads a background image for HMI screens. Returns the URL to use in screen config. Requires admin role."
+					}
+				},
+				{
+					"name": "Load HMI Demo",
+					"request": {
+						"method": "POST",
+						"url": {
+							"raw": "{{base_url}}/api/hmi/load-demo",
+							"host": ["{{base_url}}"],
+							"path": ["api", "hmi", "load-demo"]
+						},
+						"description": "Loads demo HMI config. Only adds new plants (does not overwrite existing). Requires admin role."
+					}
+				}
+			]
+		},
+		{
+			"name": "Audit",
+			"description": "Audit trail log.",
+			"item": [
+				{
+					"name": "Get Audit Trail",
+					"request": {
+						"method": "GET",
+						"url": {
+							"raw": "{{base_url}}/api/audit?lines=200",
+							"host": ["{{base_url}}"],
+							"path": ["api", "audit"],
+							"query": [
+								{
+									"key": "lines",
+									"value": "200",
+									"description": "Number of entries (1-5000, default 200)"
+								},
+								{
+									"key": "action",
+									"value": "login",
+									"description": "Filter by action type (optional, supports prefix match)",
+									"disabled": true
+								}
+							]
+						},
+						"description": "Returns audit trail entries from SQLite (newest first). Supports action filter with prefix match. Requires operator role."
+					}
+				}
+			]
+		},
+		{
+			"name": "Logbook",
+			"description": "Shift logbook for operator notes.",
+			"item": [
+				{
+					"name": "Get Logbook Entries",
+					"request": {
+						"method": "GET",
+						"url": {
+							"raw": "{{base_url}}/api/logbook?lines=100",
+							"host": ["{{base_url}}"],
+							"path": ["api", "logbook"],
+							"query": [
+								{
+									"key": "lines",
+									"value": "100",
+									"description": "Number of entries (1-1000, default 100)"
+								},
+								{
+									"key": "shift",
+									"value": "morning",
+									"description": "Filter by shift name (optional)",
+									"disabled": true
+								}
+							]
+						},
+						"description": "Reads logbook entries from SQLite with optional shift filter."
+					}
+				},
+				{
+					"name": "Add Logbook Entry",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"message\": \"Replaced pressure sensor on Line 3. Recalibration pending.\",\n  \"shift\": \"morning\",\n  \"category\": \"maintenance\",\n  \"priority\": \"high\"\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/api/logbook",
+							"host": ["{{base_url}}"],
+							"path": ["api", "logbook"]
+						},
+						"description": "Adds a logbook entry. Categories: observation, maintenance, incident, note. Priorities: low, normal, high. Requires operator role."
+					}
+				}
+			]
+		},
+		{
+			"name": "ML Analytics",
+			"description": "AI/ML engine: status, alerts, results, correlation matrix, configuration.",
+			"item": [
+				{
+					"name": "ML Status",
+					"request": {
+						"method": "GET",
+						"url": {
+							"raw": "{{base_url}}/api/ml/status",
+							"host": ["{{base_url}}"],
+							"path": ["api", "ml", "status"]
+						},
+						"description": "Returns ML engine status: online/offline, last run time, module toggles, cycle info."
+					}
+				},
+				{
+					"name": "ML Alerts",
+					"request": {
+						"method": "GET",
+						"url": {
+							"raw": "{{base_url}}/api/ml/alerts?hours=24",
+							"host": ["{{base_url}}"],
+							"path": ["api", "ml", "alerts"],
+							"query": [
+								{
+									"key": "hours",
+									"value": "24",
+									"description": "Lookback hours (1-168, default 24)"
+								}
+							]
+						},
+						"description": "Returns recent ML alerts: anomalies, broken correlations, change points. Sorted by time desc, max 50."
+					}
+				},
+				{
+					"name": "ML Results",
+					"request": {
+						"method": "GET",
+						"url": {
+							"raw": "{{base_url}}/api/ml/results?device=Siemens-S7-1500&hours=6",
+							"host": ["{{base_url}}"],
+							"path": ["api", "ml", "results"],
+							"query": [
+								{
+									"key": "device",
+									"value": "Siemens-S7-1500",
+									"description": "Device name (required)"
+								},
+								{
+									"key": "hours",
+									"value": "6",
+									"description": "Lookback hours (1-168, default 6)"
+								}
+							]
+						},
+						"description": "Returns all ML analysis data for a device grouped by analysis type (anomaly, forecast, etc.)."
+					}
+				},
+				{
+					"name": "ML Correlation Matrix",
+					"request": {
+						"method": "GET",
+						"url": {
+							"raw": "{{base_url}}/api/ml/correlation?device=Siemens-S7-1500&hours=24",
+							"host": ["{{base_url}}"],
+							"path": ["api", "ml", "correlation"],
+							"query": [
+								{
+									"key": "device",
+									"value": "Siemens-S7-1500",
+									"description": "Device name (required)"
+								},
+								{
+									"key": "hours",
+									"value": "24",
+									"description": "Lookback hours (1-168, default 24)"
+								}
+							]
+						},
+						"description": "Returns the tag correlation matrix for a device from the latest ML cycle."
+					}
+				},
+				{
+					"name": "Get ML Config",
+					"request": {
+						"method": "GET",
+						"url": {
+							"raw": "{{base_url}}/api/ml/config",
+							"host": ["{{base_url}}"],
+							"path": ["api", "ml", "config"]
+						},
+						"description": "Returns the current ML configuration (merged with defaults)."
+					}
+				},
+				{
+					"name": "Update ML Config",
+					"request": {
+						"method": "PUT",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"mlConfig\": {\n    \"cycleIntervalMinutes\": 5,\n    \"forecastHours\": 2,\n    \"minPoints\": 100,\n    \"anomaly\": {\n      \"enabled\": true,\n      \"contamination\": 0.05,\n      \"minAgreement\": 2\n    },\n    \"explainability\": {\n      \"enabled\": true,\n      \"topContributors\": 5\n    },\n    \"correlation\": {\n      \"enabled\": true,\n      \"baselineHours\": 6,\n      \"recentMinutes\": 30,\n      \"breakThreshold\": 0.4\n    },\n    \"changepoint\": {\n      \"enabled\": true,\n      \"minSegmentSize\": 60,\n      \"penalty\": 10.0\n    },\n    \"pattern\": {\n      \"enabled\": true,\n      \"windowSize\": 60,\n      \"topK\": 3\n    }\n  }\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/api/ml/config",
+							"host": ["{{base_url}}"],
+							"path": ["api", "ml", "config"]
+						},
+						"description": "Updates ML configuration in config.yml. Values are validated and clamped to safe ranges. Requires admin role."
+					}
+				},
+				{
+					"name": "Trigger ML Run Now",
+					"request": {
+						"method": "POST",
+						"url": {
+							"raw": "{{base_url}}/api/ml/run-now",
+							"host": ["{{base_url}}"],
+							"path": ["api", "ml", "run-now"]
+						},
+						"description": "Writes a trigger file so the ML predictor runs immediately on next poll. Requires admin role."
+					}
+				}
+			]
+		},
+		{
+			"name": "PLC Tag Discovery (pylogix)",
+			"description": "Direct pylogix proxy for Allen-Bradley PLC discovery and diagnostics.",
+			"item": [
+				{
+					"name": "Service Health",
+					"request": {
+						"method": "GET",
+						"url": {
+							"raw": "{{base_url}}/api/plctag/health",
+							"host": ["{{base_url}}"],
+							"path": ["api", "plctag", "health"]
+						},
+						"description": "Checks if the pylogix service is running. Requires admin role."
+					}
+				},
+				{
+					"name": "Connection Stats",
+					"request": {
+						"method": "GET",
+						"url": {
+							"raw": "{{base_url}}/api/plctag/stats",
+							"host": ["{{base_url}}"],
+							"path": ["api", "plctag", "stats"]
+						},
+						"description": "Returns PLC connection statistics for safety monitoring. Requires admin role."
+					}
+				},
+				{
+					"name": "Full Discovery",
+					"request": {
+						"method": "POST",
+						"url": {
+							"raw": "{{base_url}}/api/plctag/discover?ip=192.168.1.40&path=1,0",
+							"host": ["{{base_url}}"],
+							"path": ["api", "plctag", "discover"],
+							"query": [
+								{
+									"key": "ip",
+									"value": "192.168.1.40",
+									"description": "PLC IP address (required)"
+								},
+								{
+									"key": "path",
+									"value": "1,0",
+									"description": "CIP path backplane,slot (default 1,0)"
+								}
+							]
+						},
+						"description": "Full discovery: controller tags + program tags. May take 5-10 seconds. Requires admin role."
+					}
+				},
+				{
+					"name": "Discover Controller Tags",
+					"request": {
+						"method": "POST",
+						"url": {
+							"raw": "{{base_url}}/api/plctag/discover/tags?ip=192.168.1.40&path=1,0",
+							"host": ["{{base_url}}"],
+							"path": ["api", "plctag", "discover", "tags"],
+							"query": [
+								{
+									"key": "ip",
+									"value": "192.168.1.40",
+									"description": "PLC IP address (required)"
+								},
+								{
+									"key": "path",
+									"value": "1,0",
+									"description": "CIP path backplane,slot (default 1,0)"
+								}
+							]
+						},
+						"description": "Lists controller-scoped tags only. Requires admin role."
+					}
+				},
+				{
+					"name": "Discover Programs",
+					"request": {
+						"method": "POST",
+						"url": {
+							"raw": "{{base_url}}/api/plctag/discover/programs?ip=192.168.1.40&path=1,0",
+							"host": ["{{base_url}}"],
+							"path": ["api", "plctag", "discover", "programs"],
+							"query": [
+								{
+									"key": "ip",
+									"value": "192.168.1.40",
+									"description": "PLC IP address (required)"
+								},
+								{
+									"key": "path",
+									"value": "1,0",
+									"description": "CIP path backplane,slot (default 1,0)"
+								}
+							]
+						},
+						"description": "Lists all programs in the PLC. Requires admin role."
+					}
+				},
+				{
+					"name": "PLC Identity",
+					"request": {
+						"method": "POST",
+						"url": {
+							"raw": "{{base_url}}/api/plctag/diagnostics/identity?ip=192.168.1.40&path=1,0",
+							"host": ["{{base_url}}"],
+							"path": ["api", "plctag", "diagnostics", "identity"],
+							"query": [
+								{
+									"key": "ip",
+									"value": "192.168.1.40",
+									"description": "PLC IP address (required)"
+								},
+								{
+									"key": "path",
+									"value": "1,0",
+									"description": "CIP path backplane,slot (default 1,0)"
+								}
+							]
+						},
+						"description": "Returns PLC identity: model, firmware, serial number. Requires admin role."
+					}
+				},
+				{
+					"name": "PLC Health Check",
+					"request": {
+						"method": "POST",
+						"url": {
+							"raw": "{{base_url}}/api/plctag/diagnostics/health?ip=192.168.1.40&path=1,0",
+							"host": ["{{base_url}}"],
+							"path": ["api", "plctag", "diagnostics", "health"],
+							"query": [
+								{
+									"key": "ip",
+									"value": "192.168.1.40",
+									"description": "PLC IP address (required)"
+								},
+								{
+									"key": "path",
+									"value": "1,0",
+									"description": "CIP path backplane,slot (default 1,0)"
+								}
+							]
+						},
+						"description": "Comprehensive PLC health: identity + tag count + programs. Requires admin role."
+					}
+				}
+			]
+		}
+	]
+}

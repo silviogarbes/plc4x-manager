@@ -1,0 +1,299 @@
+{
+  "plants": [
+    {
+      "id": "plant-demo",
+      "name": "Demo-Plant",
+      "areas": [
+        {
+          "id": "area-utilities",
+          "name": "Utilities",
+          "equipment": [
+            {
+              "id": "equip-boiler1",
+              "name": "Boiler 01",
+              "device": "Demo-Simulated",
+              "screen": {
+                "backgroundImage": "",
+                "width": 1200,
+                "height": 700,
+                "elements": [
+                  {
+                    "id": "el-1",
+                    "type": "label",
+                    "x": 50,
+                    "y": 30,
+                    "width": 300,
+                    "height": 35,
+                    "text": "Boiler 01 — Control Panel",
+                    "fontSize": 20,
+                    "color": "#1b1f24"
+                  },
+                  {
+                    "id": "el-2",
+                    "type": "display",
+                    "x": 200,
+                    "y": 100,
+                    "width": 130,
+                    "height": 55,
+                    "tag": "RandomInteger",
+                    "label": "Temperature",
+                    "unit": "°C",
+                    "thresholds": {
+                      "warning": 1000000000,
+                      "critical": 1500000000
+                    }
+                  },
+                  {
+                    "id": "el-3",
+                    "type": "gauge",
+                    "x": 400,
+                    "y": 80,
+                    "width": 120,
+                    "height": 100,
+                    "tag": "RandomFloat",
+                    "label": "Pressure",
+                    "unit": "bar",
+                    "min": 0,
+                    "max": 10,
+                    "thresholds": {"warning": 7, "critical": 9}
+                  },
+                  {
+                    "id": "el-4",
+                    "type": "tank",
+                    "x": 50,
+                    "y": 100,
+                    "width": 80,
+                    "height": 200,
+                    "tag": "RandomInteger",
+                    "min": 0,
+                    "max": 2147483647,
+                    "unit": "%",
+                    "fillColor": "#38bdf8"
+                  },
+                  {
+                    "id": "el-5",
+                    "type": "bargraph",
+                    "x": 850,
+                    "y": 100,
+                    "width": 40,
+                    "height": 180,
+                    "tag": "RandomInteger",
+                    "min": 0,
+                    "max": 2147483647,
+                    "fillColor": "#38bdf8",
+                    "orientation": "vertical"
+                  },
+                  {
+                    "id": "el-6",
+                    "type": "progressBar",
+                    "x": 200,
+                    "y": 400,
+                    "width": 250,
+                    "height": 25,
+                    "tag": "RandomInteger",
+                    "min": 0,
+                    "max": 2147483647,
+                    "fillColor": "#22c55e"
+                  },
+                  {
+                    "id": "el-7",
+                    "type": "indicator",
+                    "x": 600,
+                    "y": 120,
+                    "width": 30,
+                    "height": 30,
+                    "tag": "RandomBool",
+                    "colorOn": "#22c55e",
+                    "colorOff": "#ef4444",
+                    "labelOn": "Flame ON",
+                    "labelOff": "Flame OFF"
+                  },
+                  {
+                    "id": "el-8",
+                    "type": "valve",
+                    "x": 350,
+                    "y": 300,
+                    "width": 40,
+                    "height": 40,
+                    "tag": "RandomBool",
+                    "colorOpen": "#22c55e",
+                    "colorClosed": "#ef4444"
+                  },
+                  {
+                    "id": "el-9",
+                    "type": "motor",
+                    "x": 700,
+                    "y": 200,
+                    "width": 60,
+                    "height": 60,
+                    "tag": "RandomBool",
+                    "colorOn": "#22c55e",
+                    "colorOff": "#6b7280",
+                    "label": "Fan"
+                  },
+                  {
+                    "id": "el-10",
+                    "type": "pipe",
+                    "x": 150,
+                    "y": 350,
+                    "width": 200,
+                    "height": 0,
+                    "points": [0, 0, 200, 0],
+                    "flowActive": "RandomBool",
+                    "color": "#38bdf8"
+                  },
+                  {
+                    "id": "el-11",
+                    "type": "alarmBanner",
+                    "x": 200,
+                    "y": 450,
+                    "width": 300,
+                    "height": 35,
+                    "tag": "RandomBool",
+                    "text": "BOILER OVERHEAT ALARM",
+                    "triggerValue": 1
+                  },
+                  {
+                    "id": "el-12",
+                    "type": "switch",
+                    "x": 600,
+                    "y": 400,
+                    "width": 70,
+                    "height": 35,
+                    "tag": "RandomBool",
+                    "label": "Burner",
+                    "writeValueOn": 1,
+                    "writeValueOff": 0
+                  },
+                  {
+                    "id": "el-13",
+                    "type": "button",
+                    "x": 700,
+                    "y": 400,
+                    "width": 110,
+                    "height": 40,
+                    "tag": "RandomBool",
+                    "label": "Start Pump",
+                    "writeValue": 1,
+                    "confirmMessage": "Start the feed pump?"
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "id": "area-electrical",
+          "name": "Electrical",
+          "equipment": [
+            {
+              "id": "equip-energymeter",
+              "name": "Energy Meter",
+              "device": "Demo-Simulated",
+              "screen": {
+                "backgroundImage": "",
+                "width": 1200,
+                "height": 700,
+                "elements": [
+                  {
+                    "id": "el-20",
+                    "type": "label",
+                    "x": 50,
+                    "y": 30,
+                    "width": 300,
+                    "height": 35,
+                    "text": "Energy Meter — Main Panel",
+                    "fontSize": 20,
+                    "color": "#1b1f24"
+                  },
+                  {
+                    "id": "el-21",
+                    "type": "display",
+                    "x": 100,
+                    "y": 100,
+                    "width": 130,
+                    "height": 55,
+                    "tag": "RandomInteger",
+                    "label": "Voltage L1",
+                    "unit": "V"
+                  },
+                  {
+                    "id": "el-22",
+                    "type": "display",
+                    "x": 250,
+                    "y": 100,
+                    "width": 130,
+                    "height": 55,
+                    "tag": "RandomFloat",
+                    "label": "Current L1",
+                    "unit": "A"
+                  },
+                  {
+                    "id": "el-23",
+                    "type": "gauge",
+                    "x": 500,
+                    "y": 80,
+                    "width": 140,
+                    "height": 120,
+                    "tag": "RandomFloat",
+                    "label": "Power Factor",
+                    "min": 0,
+                    "max": 1
+                  },
+                  {
+                    "id": "el-24",
+                    "type": "indicator",
+                    "x": 700,
+                    "y": 120,
+                    "width": 30,
+                    "height": 30,
+                    "tag": "RandomBool",
+                    "labelOn": "Breaker ON",
+                    "labelOff": "Breaker OFF"
+                  },
+                  {
+                    "id": "el-25",
+                    "type": "progressBar",
+                    "x": 100,
+                    "y": 250,
+                    "width": 300,
+                    "height": 25,
+                    "tag": "RandomInteger",
+                    "fillColor": "#f59e0b",
+                    "label": "Load"
+                  },
+                  {
+                    "id": "el-26",
+                    "type": "numericInput",
+                    "x": 500,
+                    "y": 300,
+                    "width": 150,
+                    "height": 40,
+                    "tag": "RandomInteger",
+                    "label": "Set Voltage",
+                    "unit": "V",
+                    "min": 0,
+                    "max": 500
+                  },
+                  {
+                    "id": "el-27",
+                    "type": "slider",
+                    "x": 100,
+                    "y": 350,
+                    "width": 300,
+                    "height": 40,
+                    "tag": "RandomInteger",
+                    "label": "Dimmer",
+                    "min": 0,
+                    "max": 100,
+                    "unit": "%"
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
