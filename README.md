@@ -26,7 +26,8 @@ Turn any PLC (Siemens S7, Modbus TCP, OPC-UA, and others) into an OPC-UA server 
 - **ML Analytics**: 7 ML modules running automatically every cycle — see ML Analytics section below
 - **HMI Replay / Time Travel**: DVR-style playback of historical HMI screens — select a date/time and watch gauges, tanks, valves animate with past data from InfluxDB. Snapshot mode (single instant) and DVR mode (play/pause/speed/scrub)
 - **Predictive Maintenance**: register equipment failures, build a failure catalog, train supervised ML models (GradientBoosting) that predict future failures based on sensor patterns. "Bearing failure predicted in ~72h (85% confidence)"
-- **NLP Chat (AI Assistant)**: floating chat button (bottom-right corner, visible when `CHAT_API_KEY` is set) — ask questions in natural language ("What was the OEE last week?") and get answers with real data. Powered by OpenRouter API with auto/free model fallback. 6 tools for querying tag history, alarms, OEE, ML insights, failures. Inline charts in responses
+- **NLP Chat (AI Assistant)**: floating chat button (bottom-right corner) — ask questions in natural language ("What was the OEE last week?") and get answers with real data. Powered by OpenRouter API with auto/free model fallback. 6 tools for querying tag history, alarms, OEE, ML insights, failures. Inline charts in responses. Pre-configured suggestion chips for common questions
+- **Proactive AI Notifications**: the AI assistant **initiates conversations** when it detects critical events — unacknowledged critical alarms, multiple warning alarms, predictive maintenance alerts (>70% failure probability), ML anomalies. The chat button pulses red with a badge count. Cooldowns prevent notification spam (2 min for critical alarms, 5-15 min for other events)
 - **PDF reports & CSV export**: device status, tag statistics, alarm history, raw data export
 - **Shift logbook**: operator observations, incidents, handover notes per shift
 - **Inline tag trending**: click any tag value for instant SVG trend chart with period selection
@@ -318,8 +319,38 @@ Full interactive documentation available at the **API** tab in the web admin, or
 | GET    | `/api/chat/status`                                | Chat availability (no auth)    |
 | POST   | `/api/chat/ask`                                   | Send question, get AI response |
 | GET    | `/api/chat/history`                               | Conversation history           |
+| GET    | `/api/chat/messages`                              | Messages for a conversation    |
 | GET    | `/api/chat/config`                                | Chat configuration (admin)     |
 | PUT    | `/api/chat/config`                                | Update chat config (admin)     |
+
+### AI Chat Configuration
+
+The AI assistant requires an [OpenRouter](https://openrouter.ai/) API key. Add to `.env`:
+
+```env
+CHAT_API_KEY=sk-or-v1-your-key-here
+CHAT_MODEL=google/gemini-2.0-flash-lite-001,openrouter/free
+```
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `CHAT_API_KEY` | *(empty = disabled)* | OpenRouter API key. Get one at https://openrouter.ai/keys |
+| `CHAT_API_URL` | `https://openrouter.ai/api/v1` | API base URL |
+| `CHAT_MODEL` | `openrouter/auto,openrouter/free` | Comma-separated model list (first = primary, rest = fallback) |
+| `CHAT_MAX_TOKENS` | `2048` | Max tokens per response |
+
+**Model recommendations:**
+- `google/gemini-2.0-flash-lite-001,openrouter/free` — cheapest with tool calling support
+- `openrouter/auto,openrouter/free` — auto-selects best cost/quality, free fallback
+- `anthropic/claude-sonnet-4-20250514,openrouter/free` — highest quality, higher cost
+
+**Proactive notifications** work via WebSocket — the backend checks every 15 seconds for:
+- Unacknowledged critical alarms (2 min cooldown per alarm)
+- 3+ warning alarms active (5 min cooldown)
+- Predictive maintenance alerts >70% probability (15 min cooldown)
+- ML anomalies flagged as critical (10 min cooldown)
+
+When triggered, the chat button pulses red with a notification count badge.
 
 ## License
 
