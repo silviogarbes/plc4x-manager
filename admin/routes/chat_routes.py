@@ -203,6 +203,44 @@ async def chat_history(request: Request, all: bool = Query(default=False), limit
     return {"conversations": conversations}
 
 
+@router.get("/api/chat/messages")
+async def chat_messages(
+    request: Request,
+    conversation_id: str = Query(...),
+    user: CurrentUser = Depends(get_current_user),
+):
+    """Return all messages for a specific conversation."""
+    db = request.app.state.db
+
+    # Verify user owns this conversation (or is admin)
+    async with db.execute(
+        "SELECT user FROM chat_history WHERE conversation_id = ? LIMIT 1",
+        (conversation_id,),
+    ) as c:
+        row = await c.fetchone()
+    if not row:
+        return {"messages": []}
+    if row["user"] != user.username and user.role != "admin":
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    async with db.execute(
+        "SELECT role, message, model_used, timestamp FROM chat_history WHERE conversation_id = ? ORDER BY id ASC",
+        (conversation_id,),
+    ) as cursor:
+        rows = await cursor.fetchall()
+
+    messages = []
+    for r in rows:
+        messages.append({
+            "role": r["role"],
+            "message": r["message"],
+            "model_used": r["model_used"],
+            "timestamp": r["timestamp"],
+        })
+
+    return {"messages": messages, "conversation_id": conversation_id}
+
+
 @router.get("/api/chat/config")
 async def chat_config_get(user: CurrentUser = Depends(require_admin)):
     return {"enabled": _llm.enabled, "api_url": _llm.api_url, "models": _llm.models, "max_tokens": _llm.max_tokens, "api_key_set": bool(_llm.api_key)}

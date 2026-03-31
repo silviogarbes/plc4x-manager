@@ -4439,12 +4439,32 @@ const ChatWidget = (() => {
         _convSelect.value = current;
     }
 
-    function switchConversation(convId) {
+    async function switchConversation(convId) {
         if (!convId) { newChat(); return; }
         _convId = convId;
         _messages.innerHTML = '';
         _destroyCharts();
-        _addSystemMessage('Conversation loaded. Continue asking questions.');
+
+        try {
+            const token = getToken();
+            const resp = await fetch(`/api/chat/messages?conversation_id=${encodeURIComponent(convId)}`, {
+                headers: { 'Authorization': 'Bearer ' + token }
+            });
+            if (!resp.ok) {
+                _addSystemMessage('Could not load conversation.');
+                return;
+            }
+            const data = await resp.json();
+            if (data.messages && data.messages.length > 0) {
+                data.messages.forEach(m => {
+                    _addMessage(m.role, m.message, m.model_used || '');
+                });
+            } else {
+                _addSystemMessage('Empty conversation.');
+            }
+        } catch (e) {
+            _addSystemMessage('Failed to load conversation.');
+        }
     }
 
     async function send() {
