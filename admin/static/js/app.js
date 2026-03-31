@@ -4314,12 +4314,42 @@ const ChatWidget = (() => {
         if (_panel.classList.contains('open')) { _input.focus(); loadConversations(); }
     }
 
+    const _SUGGESTIONS = [
+        "What alarms are currently active?",
+        "Show me the OEE for Demo-Simulated last 24h",
+        "What is the current temperature?",
+        "Are there any anomalies detected?",
+        "Show failure history for Demo-Simulated",
+        "What ML insights do we have?",
+        "List all devices and their status",
+        "Compare RandomFloat and StateFloat trends",
+    ];
+
     function newChat() {
         _convId = null;
         _messages.innerHTML = '';
         _convSelect.value = '';
         _destroyCharts();
         _addSystemMessage('Hello! Ask me anything about your plant data, alarms, or equipment status.');
+        _addSuggestions();
+    }
+
+    function _addSuggestions() {
+        const container = document.createElement('div');
+        container.className = 'chat-suggestions';
+        _SUGGESTIONS.forEach(text => {
+            const chip = document.createElement('button');
+            chip.className = 'chat-suggestion-chip';
+            chip.textContent = text;
+            chip.onclick = () => {
+                _input.value = text;
+                container.remove();
+                send();
+            };
+            container.appendChild(chip);
+        });
+        _messages.appendChild(container);
+        _messages.scrollTop = _messages.scrollHeight;
     }
 
     async function loadConversations() {
@@ -4362,6 +4392,9 @@ const ChatWidget = (() => {
         _input.value = '';
         _sending = true;
         _sendBtn.disabled = true;
+        // Remove suggestion chips when user sends a message
+        const suggestions = _messages.querySelector('.chat-suggestions');
+        if (suggestions) suggestions.remove();
         _addMessage('user', text);
         const typingEl = _addTyping();
 
