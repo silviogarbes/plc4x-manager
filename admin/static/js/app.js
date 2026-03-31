@@ -218,6 +218,16 @@ async function api(url, method = "GET", body = null) {
     return data;
 }
 
+async function apiFetch(url, opts = {}) {
+    const token = getToken();
+    if (!opts.headers) opts.headers = {};
+    if (!opts.headers["Authorization"]) opts.headers["Authorization"] = `Bearer ${token}`;
+    if (!opts.headers["Content-Type"] && opts.body) opts.headers["Content-Type"] = "application/json";
+    const res = await fetch(url, opts);
+    if (res.status === 401) { logout(); throw new Error("Session expired"); }
+    return res;
+}
+
 function toast(message, type = "success") {
     const container = document.getElementById("toastContainer");
     const el = document.createElement("div");
