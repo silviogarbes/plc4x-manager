@@ -23,7 +23,10 @@ Turn any PLC (Siemens S7, Modbus TCP, OPC-UA, and others) into an OPC-UA server 
 - **Alarm system**: per-tag thresholds with conditional profiles (per product), virtual tags, sound notification, acknowledge, history
 - **OEE dashboard**: Availability x Performance x Quality with SVG gauges and trend chart
 - **Multi-plant dashboard**: consolidated view grouped by plant with device status, alarms, OEE per device
-- **ML Analytics**: 5 ML modules running automatically every cycle — see ML Analytics section below
+- **ML Analytics**: 7 ML modules running automatically every cycle — see ML Analytics section below
+- **HMI Replay / Time Travel**: DVR-style playback of historical HMI screens — select a date/time and watch gauges, tanks, valves animate with past data from InfluxDB. Snapshot mode (single instant) and DVR mode (play/pause/speed/scrub)
+- **Predictive Maintenance**: register equipment failures, build a failure catalog, train supervised ML models (GradientBoosting) that predict future failures based on sensor patterns. "Bearing failure predicted in ~72h (85% confidence)"
+- **NLP Chat (AI Assistant)**: floating chat button (bottom-right corner, visible when `CHAT_API_KEY` is set) — ask questions in natural language ("What was the OEE last week?") and get answers with real data. Powered by OpenRouter API with auto/free model fallback. 6 tools for querying tag history, alarms, OEE, ML insights, failures. Inline charts in responses
 - **PDF reports & CSV export**: device status, tag statistics, alarm history, raw data export
 - **Shift logbook**: operator observations, incidents, handover notes per shift
 - **Inline tag trending**: click any tag value for instant SVG trend chart with period selection
@@ -36,7 +39,7 @@ Turn any PLC (Siemens S7, Modbus TCP, OPC-UA, and others) into an OPC-UA server 
 
 ## ML Analytics
 
-The `plc4x-ml` container runs 5 ML modules automatically on every configured interval (default: 5 minutes):
+The `plc4x-ml` container runs 8 ML modules automatically on every configured interval (default: 5 minutes):
 
 | Module | Library | Output |
 |--------|---------|--------|
@@ -47,6 +50,7 @@ The `plc4x-ml` container runs 5 ML modules automatically on every configured int
 | **Pattern Matching** | `stumpy` | Motif (recurring patterns) and discord (rare anomalies) discovery → `plc4x_ml` |
 | **Cross-tag Correlation** | `numpy` | Correlation matrix + broken correlation alerts → `plc4x_ml` |
 | **SHAP Explainability** | `shap` | Top contributing tags when an anomaly is detected → `plc4x_ml` |
+| **Predictive Maintenance** | `scikit-learn` (GradientBoosting) | Failure prediction from operator-reported failures — trains on pre-failure sensor patterns, alerts when probability > 70% → `plc4x_ml` |
 
 Results are visualized in Grafana (AI Predictions and Alarms & Anomalies dashboards). A manual "Run Now" button in the web admin triggers an immediate ML cycle without waiting for the next scheduled interval.
 
@@ -286,6 +290,36 @@ Full interactive documentation available at the **API** tab in the web admin, or
 | Method | Endpoint                                          | Description                    |
 |--------|---------------------------------------------------|--------------------------------|
 | GET    | `/api/tags/history`                               | Tag value history for charts   |
+
+### HMI Replay / Time Travel
+| Method | Endpoint                                          | Description                    |
+|--------|---------------------------------------------------|--------------------------------|
+| GET    | `/api/replay/snapshot`                            | Tag values at a specific timestamp |
+| GET    | `/api/replay/range`                               | Series of frames for DVR playback |
+
+### Predictive Maintenance
+| Method | Endpoint                                          | Description                    |
+|--------|---------------------------------------------------|--------------------------------|
+| GET    | `/api/failures/catalog`                           | List failure types             |
+| POST   | `/api/failures/catalog`                           | Create failure type            |
+| PUT    | `/api/failures/catalog/<id>`                      | Update failure type            |
+| DELETE | `/api/failures/catalog/<id>`                      | Delete failure type            |
+| GET    | `/api/failures`                                   | List failure log entries       |
+| POST   | `/api/failures`                                   | Report a failure               |
+| PUT    | `/api/failures/<id>`                              | Update failure (resolve)       |
+| DELETE | `/api/failures/<id>`                              | Delete failure entry           |
+| POST   | `/api/failures/train`                             | Train prediction model         |
+| GET    | `/api/failures/predictions`                       | Active failure predictions     |
+| GET    | `/api/failures/models`                            | List trained models            |
+
+### AI Chat Assistant
+| Method | Endpoint                                          | Description                    |
+|--------|---------------------------------------------------|--------------------------------|
+| GET    | `/api/chat/status`                                | Chat availability (no auth)    |
+| POST   | `/api/chat/ask`                                   | Send question, get AI response |
+| GET    | `/api/chat/history`                               | Conversation history           |
+| GET    | `/api/chat/config`                                | Chat configuration (admin)     |
+| PUT    | `/api/chat/config`                                | Update chat config (admin)     |
 
 ## License
 
