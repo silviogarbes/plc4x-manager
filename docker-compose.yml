@@ -73,6 +73,11 @@ services:
       # Grafana proxy
       - GRAFANA_URL=http://grafana:3000
       - GRAFANA_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin}
+      # AI Chat (OpenRouter)
+      - CHAT_API_KEY=${CHAT_API_KEY:-}
+      - CHAT_API_URL=${CHAT_API_URL:-https://openrouter.ai/api/v1}
+      - CHAT_MODEL=${CHAT_MODEL:-openrouter/auto,openrouter/free}
+      - CHAT_MAX_TOKENS=${CHAT_MAX_TOKENS:-2048}
     networks:
       - frontend
       - backend
