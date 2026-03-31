@@ -456,6 +456,15 @@ def run_device_analyses(client, write_api, device_tags):
                 except Exception as e:
                     log.warning(f"SHAP explainability failed for {device}/{alias}: {e}")
 
+        # Predictive Maintenance (runs after SHAP)
+        try:
+            from predictive_maintenance import predict_failures
+            predict_failures(write_api, plant, device, tag_data)
+        except ImportError:
+            pass
+        except Exception as e:
+            log.warning(f"Predictive maintenance failed for device {device}: {e}")
+
 
 def main_loop():
     """Main prediction loop."""
@@ -469,6 +478,15 @@ def main_loop():
     while True:
         # Reload ML config at the start of each cycle
         load_ml_config()
+
+        # Check for pending training requests
+        try:
+            from predictive_maintenance import check_train_requests
+            check_train_requests()
+        except ImportError:
+            pass
+        except Exception as e:
+            log.warning(f"Train request check failed: {e}")
 
         cycle_start = time.time()
         try:

@@ -15,6 +15,8 @@ Endpoints:
 from __future__ import annotations
 
 import json
+import os
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
@@ -234,3 +236,50 @@ async def failure_log_delete(failure_id: int, request: Request, user: CurrentUse
     await db.execute("DELETE FROM failure_log WHERE id = ?", (failure_id,))
     await db.commit()
     return {"ok": True, "deleted": failure_id}
+
+
+# =============================================
+# Model Training
+# =============================================
+
+@router.post("/api/failures/train")
+async def train_model(request: Request, body: dict, user: CurrentUser = Depends(require_admin)):
+    """Trigger model training for a failure_type + device pair via file-based IPC."""
+    import asyncio
+
+    failure_type = (body.get("failure_type") or "").strip()
+    device = (body.get("device") or "").strip()
+    if not failure_type or not device:
+        raise HTTPException(status_code=400, detail="failure_type and device are required")
+
+    db = request.app.state.db
+    async with db.execute("SELECT id FROM failure_catalog WHERE name = ?", (failure_type,)) as c:
+        if not await c.fetchone():
+            raise HTTPException(status_code=400, detail=f"Unknown failure_type '{failure_type}'")
+
+    config_dir = os.path.dirname(os.environ.get("CONFIG_PATH", "/app/config/config.yml"))
+    train_request = {
+        "failure_type": failure_type,
+        "device": device,
+        "requested_by": user.username,
+        "requested_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+    }
+    train_path = os.path.join(config_dir, ".train-request.json")
+    with open(train_path, "w") as f:
+        json.dump(train_request, f)
+
+    result_path = os.path.join(config_dir, ".train-result.json")
+    if os.path.exists(result_path):
+        os.unlink(result_path)
+
+    for _ in range(300):
+        await asyncio.sleep(1)
+        if os.path.exists(result_path):
+            with open(result_path, "r") as f:
+                result = json.load(f)
+            os.unlink(result_path)
+            if "error" in result:
+                raise HTTPException(status_code=400, detail=result["error"])
+            return result
+
+    raise HTTPException(status_code=504, detail="Training timed out after 5 minutes")
