@@ -592,7 +592,31 @@ function hmiRenderToolbar() {
         }
         html += '</div>';
     }
+    html += '<div class="hmi-toolbar-separator"></div>';
+    html += '<button class="btn btn-primary btn-sm" id="hmiSaveBtn" onclick="hmiManualSave()" style="font-weight:600;min-width:70px">Save</button>';
+    html += '<span id="hmiSaveStatus" style="font-size:11px;color:#6b7280;margin-left:4px"></span>';
     toolbar.innerHTML = html;
+}
+
+async function hmiManualSave() {
+    const btn = document.getElementById("hmiSaveBtn");
+    const status = document.getElementById("hmiSaveStatus");
+    if (btn) btn.disabled = true;
+    if (status) status.textContent = "Saving...";
+    try {
+        await api("/api/hmi/config", "PUT", _hmiConfig);
+        if (status) { status.textContent = "Saved!"; status.style.color = "#28a745"; }
+        if (btn) btn.textContent = "Saved!";
+        setTimeout(() => {
+            if (status) { status.textContent = ""; status.style.color = "#6b7280"; }
+            if (btn) btn.textContent = "Save";
+        }, 2000);
+    } catch (e) {
+        if (status) { status.textContent = "Error!"; status.style.color = "#c8102e"; }
+        alert("Save failed: " + (e.message || e));
+    } finally {
+        if (btn) btn.disabled = false;
+    }
 }
 
 async function hmiUploadBackground(input) {
@@ -1852,9 +1876,15 @@ function hmiEscHandler(e) {
 function hmiAutoSave() {
     clearTimeout(_hmiSaveTimeout);
     _hmiSaveTimeout = setTimeout(async () => {
+        const status = document.getElementById("hmiSaveStatus");
         try {
             await api("/api/hmi/config", "PUT", _hmiConfig);
-        } catch {}
+            if (status) { status.textContent = "Auto-saved"; status.style.color = "#28a745"; }
+            setTimeout(() => { if (status) status.textContent = ""; }, 1500);
+        } catch (e) {
+            console.error("HMI auto-save failed:", e);
+            if (status) { status.textContent = "Save failed!"; status.style.color = "#c8102e"; }
+        }
     }, 500);
 }
 
