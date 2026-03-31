@@ -161,6 +161,26 @@ async def _run_migrations(db):
         await db.commit()
         log.info("Applied migration v2: predictive maintenance tables")
 
+    if current < 3:
+        await db.executescript("""
+            CREATE TABLE IF NOT EXISTS chat_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                conversation_id TEXT NOT NULL,
+                timestamp TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+                role TEXT NOT NULL,
+                message TEXT NOT NULL,
+                tool_calls TEXT,
+                model_used TEXT,
+                user TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_chat_conv ON chat_history(conversation_id);
+            CREATE INDEX IF NOT EXISTS idx_chat_user ON chat_history(user);
+            CREATE INDEX IF NOT EXISTS idx_chat_ts ON chat_history(timestamp);
+        """)
+        await db.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (3)")
+        await db.commit()
+        log.info("Applied migration v3: chat_history table")
+
 
 async def close_db(db):
     """Close database connection."""
@@ -214,6 +234,14 @@ async def db_maintenance_loop(db):
             async with db.execute("DELETE FROM failure_log WHERE occurred_at < ?", (cutoff_5y,)) as c:
                 if c.rowcount > 0:
                     log.info(f"Pruned {c.rowcount} old failure log entries")
+            await db.commit()
+
+            # Prune chat history older than 30 days
+            chat_cutoff = (datetime.datetime.now(datetime.timezone.utc)
+                          - datetime.timedelta(days=30)).isoformat()
+            async with db.execute("DELETE FROM chat_history WHERE timestamp < ?", (chat_cutoff,)) as c:
+                if c.rowcount > 0:
+                    log.info(f"Pruned {c.rowcount} old chat history entries")
             await db.commit()
         except Exception as e:
             log.error(f"DB maintenance error: {e}")

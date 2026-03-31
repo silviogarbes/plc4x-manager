@@ -12,3 +12,4 @@ influxdb-client==1.40.0
 reportlab==4.2.5
 requests==2.32.3
 aiosqlite==0.20.0
+httpx==0.28.1
