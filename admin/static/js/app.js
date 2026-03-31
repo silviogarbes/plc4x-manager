@@ -489,6 +489,7 @@ function renderDashboard(devices, status, liveMap, alarmData) {
             plantsHtml += `<div style="border:1px solid var(--border);border-radius:8px;margin-bottom:16px;overflow:hidden">
                 <div style="padding:12px 16px;background:var(--bg-secondary);display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
                     <div style="display:flex;align-items:center;gap:10px">
+                        <span style="font-size:0.7rem;text-transform:uppercase;letter-spacing:0.05em;color:var(--text-muted);font-weight:600">Plant</span>
                         <strong style="font-size:1.1rem">${escHtml(plantName)}</strong>
                         <span class="status-badge ${plantStatus}">${plantStatusLabel}</span>
                         ${pAlarms > 0 ? `<span class="status-badge badge-error">${pAlarms} alarm${pAlarms > 1 ? "s" : ""}</span>` : ""}
@@ -519,7 +520,10 @@ function renderDashboard(devices, status, liveMap, alarmData) {
 
                 plantsHtml += `<div class="plc-card" style="padding:12px 14px">
                     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
-                        <strong>${escHtml(d.name)}</strong>
+                        <div style="display:flex;align-items:center;gap:6px">
+                            <span style="font-size:0.6rem;text-transform:uppercase;letter-spacing:0.05em;color:var(--text-muted);font-weight:600;background:var(--bg-secondary);padding:1px 5px;border-radius:3px">Device</span>
+                            <strong>${escHtml(d.name)}</strong>
+                        </div>
                         <span class="status-badge ${st.cls}">${st.label}</span>
                     </div>
                     <div class="text-muted" style="font-family:var(--font-mono);font-size:10px;word-break:break-all;margin-bottom:4px">${escHtml(d.connectionString)}</div>
