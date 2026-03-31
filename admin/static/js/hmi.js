@@ -897,6 +897,12 @@ function hmiCreateElement(el) {
         node.on("click tap", () => {
             if (_hmiEditMode) hmiSelectElement(el, node);
         });
+        // Save position on drag end (even without selecting first)
+        node.on("dragend.autosave", () => {
+            el.x = Math.round(node.x());
+            el.y = Math.round(node.y());
+            hmiAutoSave();
+        });
     }
     return node;
 }
