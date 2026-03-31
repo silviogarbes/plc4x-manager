@@ -3319,7 +3319,8 @@ function _mlPopulateDeviceSelector() {
 async function loadMLStatus() {
     const body = document.getElementById("mlStatusBody");
     try {
-        const data = await apiFetch("/api/ml/status");
+        const resp = await apiFetch("/api/ml/status");
+        const data = await resp.json();
 
         // Engine status indicator
         const indicator = document.getElementById("mlEngineIndicator");
@@ -3383,7 +3384,8 @@ async function loadMLAlerts() {
     const hours = document.getElementById("mlAlertHours")?.value || "24";
     container.innerHTML = '<div style="color:var(--text-muted);font-size:0.85rem">Loading alerts...</div>';
     try {
-        const data = await apiFetch(`/api/ml/alerts?hours=${hours}`);
+        const _resp = await apiFetch(`/api/ml/alerts?hours=${hours}`);
+        const data = await _resp.json();
         const alerts = data.alerts || [];
         if (!alerts.length) {
             container.innerHTML = '<div style="color:var(--text-muted);font-size:0.85rem">No ML alerts in the selected period. The engine may still be warming up.</div>';
@@ -3467,10 +3469,12 @@ async function loadMLResults() {
     }
 
     // Load correlation matrix in parallel with full results
-    const [corrData, resultsData] = await Promise.allSettled([
-        apiFetch(`/api/ml/correlation?device=${encodeURIComponent(device)}&hours=${hours}`),
-        apiFetch(`/api/ml/results?device=${encodeURIComponent(device)}&hours=${hours}`),
+    const [corrResp, resultsResp] = await Promise.allSettled([
+        apiFetch(`/api/ml/correlation?device=${encodeURIComponent(device)}&hours=${hours}`).then(r => r.json()),
+        apiFetch(`/api/ml/results?device=${encodeURIComponent(device)}&hours=${hours}`).then(r => r.json()),
     ]);
+    const corrData = corrResp;
+    const resultsData = resultsResp;
 
     // Render correlation matrix
     if (corrEl) {
@@ -3610,7 +3614,8 @@ function _renderPatterns(motifs, discords) {
 
 async function loadMLConfig() {
     try {
-        const data = await apiFetch("/api/ml/config");
+        const _cfgResp = await apiFetch("/api/ml/config");
+        const data = await _cfgResp.json();
         const cfg = data.mlConfig || {};
 
         const set = (id, val) => { const el = document.getElementById(id); if (el) el.value = val; };
