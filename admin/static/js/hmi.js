@@ -26,6 +26,14 @@ let _hmiDeviceMap = {};            // live data: {deviceName: {tags: {alias: tag
 let _hmiActiveAlarms = {};         // alarm state: {device/tag: alarmObj}
 let _hmiSaveTimeout = null;
 
+// ── Replay / Time Travel state ──
+let _hmiReplayMode = false;
+let _hmiReplayFrames = [];
+let _hmiReplayIndex = 0;
+let _hmiReplayInterval = null;
+let _hmiReplaySpeed = 1;
+let _hmiReplayPlaying = false;
+
 // =============================================
 // Init & Data Loading
 // =============================================
@@ -1710,12 +1718,14 @@ function hmiDeselectElement() {
 // =============================================
 
 function hmiStartLiveUpdates() {
+    if (_hmiReplayMode) return;
     hmiStopLiveUpdates();
     hmiRefreshLiveData();
     _hmiRefreshInterval = setInterval(hmiRefreshLiveData, 2000);
 }
 
 async function hmiRefreshLiveData() {
+    if (_hmiReplayMode) return;
     try {
         const [data, alarmData] = await Promise.all([
             api("/api/live/read"),
@@ -1757,6 +1767,7 @@ function hmiUpdateAllElements() {
         }
         hmiUpdateElementValue(el, tagData);
     }
+    hmiEnsureReplayButton();
 }
 
 function hmiStopLiveUpdates() {
@@ -1877,3 +1888,329 @@ function hmiAutoSave() {
         }, 1000);
     }
 })();
+
+// =============================================
+// Replay / Time Travel (Phase 1)
+// =============================================
+
+function hmiEnsureReplayButton() {
+    const toolbar = document.getElementById("hmiToolbar");
+    if (!toolbar) return;
+    if (toolbar.querySelector(".hmi-replay-toolbar-btn")) return;
+    toolbar.style.display = "";
+    const btn = document.createElement("button");
+    btn.className = "hmi-replay-toolbar-btn" + (_hmiReplayMode ? " replay-active" : "");
+    btn.onclick = hmiToggleReplay;
+    btn.title = "Replay / Time Travel";
+    btn.innerHTML = "&#x1F553; Replay";
+    toolbar.appendChild(btn);
+}
+
+function hmiToggleReplay() {
+    if (_hmiReplayMode) {
+        hmiExitReplay();
+    } else {
+        hmiEnterReplayPanel();
+    }
+}
+
+function hmiEnterReplayPanel() {
+    let bar = document.getElementById("hmiReplayBar");
+    if (!bar) {
+        bar = document.createElement("div");
+        bar.id = "hmiReplayBar";
+        bar.className = "hmi-replay-bar";
+        const container = document.getElementById("hmiCanvasContainer") || document.getElementById("hmiView");
+        if (container) {
+            container.style.position = "relative";
+            container.appendChild(bar);
+        } else {
+            document.body.appendChild(bar);
+        }
+    }
+
+    const now = new Date();
+    const oneHourAgo = new Date(now.getTime() - 3600000);
+    const fmt = (d) => d.toISOString().slice(0, 16);
+
+    bar.innerHTML = `
+        <div class="hmi-replay-row">
+            <label>Mode</label>
+            <div class="hmi-replay-mode-toggle">
+                <button id="replayModeSnapshot" class="active" onclick="hmiSetReplayMode('snapshot')">Snapshot</button>
+                <button id="replayModeDvr" onclick="hmiSetReplayMode('dvr')">DVR</button>
+            </div>
+            <label>Start</label>
+            <input type="datetime-local" id="replayStart" value="${fmt(oneHourAgo)}" step="1">
+            <label id="replayEndLabel">End</label>
+            <input type="datetime-local" id="replayEnd" value="${fmt(now)}" step="1">
+            <label>Step</label>
+            <select id="replayStep">
+                <option value="5s">5s</option>
+                <option value="10s">10s</option>
+                <option value="30s" selected>30s</option>
+                <option value="1m">1m</option>
+                <option value="5m">5m</option>
+                <option value="15m">15m</option>
+                <option value="30m">30m</option>
+                <option value="1h">1h</option>
+            </select>
+            <button style="background:#c8102e;color:#fff;border:1px solid #c8102e;padding:4px 14px;border-radius:6px;cursor:pointer;font-weight:600" onclick="hmiReplayGo()">Load</button>
+        </div>
+        <div class="hmi-replay-row" id="replayTransport" style="display:none">
+            <div class="hmi-replay-controls">
+                <button onclick="hmiReplayStepBack()" title="Step back">&#x23EE;</button>
+                <button id="replayPlayBtn" onclick="hmiReplayTogglePlay()" title="Play / Pause">&#x25B6;</button>
+                <button onclick="hmiReplayStepForward()" title="Step forward">&#x23ED;</button>
+                <button onclick="hmiReplayChangeSpeed()" title="Change speed"><span class="hmi-replay-speed" id="replaySpeedLabel">1x</span></button>
+            </div>
+            <input type="range" class="hmi-replay-scrubber" id="replayScrubber" min="0" max="0" value="0"
+                   oninput="hmiReplayScrub(this.value)">
+            <span class="hmi-replay-timestamp" id="replayTimestamp">--</span>
+        </div>
+    `;
+    bar.classList.add("active");
+    hmiSetReplayMode("snapshot");
+}
+
+function hmiSetReplayMode(mode) {
+    const snBtn = document.getElementById("replayModeSnapshot");
+    const dvrBtn = document.getElementById("replayModeDvr");
+    const endLabel = document.getElementById("replayEndLabel");
+    const endInput = document.getElementById("replayEnd");
+    const stepSelect = document.getElementById("replayStep");
+
+    if (mode === "snapshot") {
+        if (snBtn) snBtn.classList.add("active");
+        if (dvrBtn) dvrBtn.classList.remove("active");
+        if (endLabel) endLabel.style.display = "none";
+        if (endInput) endInput.style.display = "none";
+        if (stepSelect) stepSelect.style.display = "none";
+    } else {
+        if (dvrBtn) dvrBtn.classList.add("active");
+        if (snBtn) snBtn.classList.remove("active");
+        if (endLabel) endLabel.style.display = "";
+        if (endInput) endInput.style.display = "";
+        if (stepSelect) stepSelect.style.display = "";
+    }
+}
+
+async function hmiReplayGo() {
+    const snBtn = document.getElementById("replayModeSnapshot");
+    const isSnapshot = snBtn && snBtn.classList.contains("active");
+
+    const equip = hmiGetCurrentEquipment();
+    if (!equip) { alert("No HMI equipment selected"); return; }
+    const device = equip.device || equip.name;
+    if (!device) { alert("Equipment has no device assigned"); return; }
+
+    if (isSnapshot) {
+        await hmiReplayLoadSnapshot(device);
+    } else {
+        await hmiReplayLoadRange(device);
+    }
+}
+
+async function hmiReplayLoadSnapshot(device) {
+    const startInput = document.getElementById("replayStart");
+    const ts = new Date(startInput.value).toISOString().replace(/\.\d+Z$/, "Z");
+
+    try {
+        const resp = await apiFetch(`/api/replay/snapshot?device=${encodeURIComponent(device)}&timestamp=${encodeURIComponent(ts)}`);
+        const data = await resp.json();
+        _hmiReplayMode = true;
+        hmiStopLiveUpdates();
+        hmiShowReplayBanner(data.actual_timestamp || ts);
+        hmiReplayInjectTags(device, data.tags);
+        hmiUpdateAllElements();
+        const btn = document.querySelector(".hmi-replay-toolbar-btn");
+        if (btn) btn.classList.add("replay-active");
+    } catch (e) {
+        alert("Replay snapshot failed: " + (e.message || e));
+    }
+}
+
+async function hmiReplayLoadRange(device) {
+    const startInput = document.getElementById("replayStart");
+    const endInput = document.getElementById("replayEnd");
+    const stepSelect = document.getElementById("replayStep");
+
+    const startTs = new Date(startInput.value).toISOString().replace(/\.\d+Z$/, "Z");
+    const endTs = new Date(endInput.value).toISOString().replace(/\.\d+Z$/, "Z");
+    const step = stepSelect.value;
+
+    try {
+        const resp = await apiFetch(`/api/replay/range?device=${encodeURIComponent(device)}&start=${encodeURIComponent(startTs)}&end=${encodeURIComponent(endTs)}&step=${encodeURIComponent(step)}`);
+        const data = await resp.json();
+
+        if (!data.frames || data.frames.length === 0) {
+            alert("No data found for the selected range");
+            return;
+        }
+
+        _hmiReplayMode = true;
+        _hmiReplayFrames = data.frames;
+        _hmiReplayIndex = 0;
+        _hmiReplaySpeed = 1;
+        _hmiReplayPlaying = false;
+        hmiStopLiveUpdates();
+
+        const transport = document.getElementById("replayTransport");
+        if (transport) transport.style.display = "flex";
+        const scrubber = document.getElementById("replayScrubber");
+        if (scrubber) {
+            scrubber.max = _hmiReplayFrames.length - 1;
+            scrubber.value = 0;
+        }
+
+        hmiShowReplayBanner(_hmiReplayFrames[0].timestamp);
+        hmiReplayShowFrame(0, device);
+
+        const btn = document.querySelector(".hmi-replay-toolbar-btn");
+        if (btn) btn.classList.add("replay-active");
+    } catch (e) {
+        alert("Replay range failed: " + (e.message || e));
+    }
+}
+
+function hmiReplayInjectTags(device, tags) {
+    if (!_hmiDeviceMap[device]) {
+        _hmiDeviceMap[device] = { tags: {}, allowWrite: false, status: "replay" };
+    }
+    for (const t of tags) {
+        _hmiDeviceMap[device].tags[t.alias] = { alias: t.alias, value: t.value };
+    }
+}
+
+function hmiReplayShowFrame(index, device) {
+    if (index < 0 || index >= _hmiReplayFrames.length) return;
+    _hmiReplayIndex = index;
+
+    const frame = _hmiReplayFrames[index];
+    if (!device) {
+        const equip = hmiGetCurrentEquipment();
+        device = equip ? (equip.device || equip.name) : null;
+    }
+    if (device) {
+        hmiReplayInjectTags(device, frame.tags);
+        hmiUpdateAllElements();
+    }
+
+    const scrubber = document.getElementById("replayScrubber");
+    if (scrubber) scrubber.value = index;
+
+    const tsLabel = document.getElementById("replayTimestamp");
+    if (tsLabel) tsLabel.textContent = frame.timestamp.replace("T", " ").replace("Z", " UTC");
+
+    hmiUpdateReplayBanner(frame.timestamp);
+}
+
+function hmiShowReplayBanner(timestamp) {
+    let banner = document.getElementById("hmiReplayBanner");
+    if (!banner) {
+        banner = document.createElement("div");
+        banner.id = "hmiReplayBanner";
+        banner.className = "hmi-replay-banner";
+        const container = document.getElementById("hmiCanvasContainer") || document.getElementById("hmiView");
+        if (container) {
+            container.style.position = "relative";
+            container.insertBefore(banner, container.firstChild);
+        } else {
+            document.body.prepend(banner);
+        }
+    }
+    const display = timestamp.replace("T", " ").replace("Z", " UTC");
+    banner.innerHTML = `REPLAY MODE &mdash; ${display} <button class="replay-back-btn" onclick="hmiExitReplay()">Back to Live</button>`;
+    banner.style.display = "flex";
+}
+
+function hmiUpdateReplayBanner(timestamp) {
+    const banner = document.getElementById("hmiReplayBanner");
+    if (!banner) return;
+    const display = timestamp.replace("T", " ").replace("Z", " UTC");
+    banner.innerHTML = `REPLAY MODE &mdash; ${display} <button class="replay-back-btn" onclick="hmiExitReplay()">Back to Live</button>`;
+}
+
+function hmiExitReplay() {
+    _hmiReplayMode = false;
+    _hmiReplayFrames = [];
+    _hmiReplayIndex = 0;
+    _hmiReplayPlaying = false;
+    if (_hmiReplayInterval) { clearInterval(_hmiReplayInterval); _hmiReplayInterval = null; }
+
+    const banner = document.getElementById("hmiReplayBanner");
+    if (banner) banner.remove();
+
+    const bar = document.getElementById("hmiReplayBar");
+    if (bar) bar.classList.remove("active");
+
+    const btn = document.querySelector(".hmi-replay-toolbar-btn");
+    if (btn) btn.classList.remove("replay-active");
+
+    hmiStartLiveUpdates();
+}
+
+function hmiReplayTogglePlay() {
+    if (_hmiReplayPlaying) {
+        hmiReplayPause();
+    } else {
+        hmiReplayPlay();
+    }
+}
+
+function hmiReplayPlay() {
+    if (_hmiReplayFrames.length === 0) return;
+    _hmiReplayPlaying = true;
+    const btn = document.getElementById("replayPlayBtn");
+    if (btn) btn.innerHTML = "&#x23F8;";
+
+    const intervalMs = Math.max(100, 2000 / _hmiReplaySpeed);
+
+    if (_hmiReplayInterval) clearInterval(_hmiReplayInterval);
+    _hmiReplayInterval = setInterval(() => {
+        if (_hmiReplayIndex < _hmiReplayFrames.length - 1) {
+            hmiReplayShowFrame(_hmiReplayIndex + 1);
+        } else {
+            hmiReplayPause();
+        }
+    }, intervalMs);
+}
+
+function hmiReplayPause() {
+    _hmiReplayPlaying = false;
+    if (_hmiReplayInterval) { clearInterval(_hmiReplayInterval); _hmiReplayInterval = null; }
+    const btn = document.getElementById("replayPlayBtn");
+    if (btn) btn.innerHTML = "&#x25B6;";
+}
+
+function hmiReplayStepForward() {
+    hmiReplayPause();
+    if (_hmiReplayIndex < _hmiReplayFrames.length - 1) {
+        hmiReplayShowFrame(_hmiReplayIndex + 1);
+    }
+}
+
+function hmiReplayStepBack() {
+    hmiReplayPause();
+    if (_hmiReplayIndex > 0) {
+        hmiReplayShowFrame(_hmiReplayIndex - 1);
+    }
+}
+
+function hmiReplayChangeSpeed() {
+    const speeds = [0.5, 1, 2, 4];
+    const idx = speeds.indexOf(_hmiReplaySpeed);
+    _hmiReplaySpeed = speeds[(idx + 1) % speeds.length];
+    const label = document.getElementById("replaySpeedLabel");
+    if (label) label.textContent = _hmiReplaySpeed + "x";
+
+    if (_hmiReplayPlaying) {
+        hmiReplayPause();
+        hmiReplayPlay();
+    }
+}
+
+function hmiReplayScrub(value) {
+    hmiReplayPause();
+    hmiReplayShowFrame(parseInt(value, 10));
+}

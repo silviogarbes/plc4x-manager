@@ -236,3 +236,189 @@
   align-items: center;
   margin-bottom: 12px;
 }
+
+/* ─── Replay / Time Travel ─────────────────────────────────────────────── */
+
+.hmi-replay-banner {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 1000;
+  background: #c8102e;
+  color: #fff;
+  text-align: center;
+  padding: 6px 16px;
+  font-weight: 600;
+  font-size: 13px;
+  letter-spacing: 0.5px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  font-family: "IBM Plex Sans", sans-serif;
+}
+
+.hmi-replay-banner .replay-back-btn {
+  background: rgba(255, 255, 255, 0.2);
+  color: #fff;
+  border: 1px solid rgba(255, 255, 255, 0.4);
+  border-radius: var(--radius, 6px);
+  padding: 3px 12px;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 500;
+  transition: background var(--transition, 0.2s);
+}
+
+.hmi-replay-banner .replay-back-btn:hover {
+  background: rgba(255, 255, 255, 0.35);
+}
+
+.hmi-replay-bar {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  z-index: 1000;
+  background: var(--bg-card, #fff);
+  border-top: 2px solid var(--border, #e0e0e0);
+  padding: 10px 16px;
+  display: none;
+  flex-direction: column;
+  gap: 8px;
+  font-family: "IBM Plex Sans", sans-serif;
+}
+
+.hmi-replay-bar.active {
+  display: flex;
+}
+
+.hmi-replay-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.hmi-replay-row label {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-muted, #6b7280);
+  min-width: 40px;
+}
+
+.hmi-replay-row input[type="datetime-local"] {
+  font-size: 12px;
+  padding: 4px 8px;
+  border: 1px solid var(--border, #e0e0e0);
+  border-radius: var(--radius, 6px);
+  background: var(--bg-card, #fff);
+  color: inherit;
+  font-family: "IBM Plex Mono", monospace;
+}
+
+.hmi-replay-row select {
+  font-size: 12px;
+  padding: 4px 8px;
+  border: 1px solid var(--border, #e0e0e0);
+  border-radius: var(--radius, 6px);
+  background: var(--bg-card, #fff);
+  color: inherit;
+}
+
+.hmi-replay-controls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.hmi-replay-controls button {
+  background: var(--bg-card, #fff);
+  border: 1px solid var(--border, #e0e0e0);
+  border-radius: var(--radius, 6px);
+  padding: 4px 10px;
+  cursor: pointer;
+  font-size: 13px;
+  transition: background var(--transition, 0.2s);
+  color: inherit;
+}
+
+.hmi-replay-controls button:hover {
+  background: var(--border, #e0e0e0);
+}
+
+.hmi-replay-controls button.active {
+  background: #c8102e;
+  color: #fff;
+  border-color: #c8102e;
+}
+
+.hmi-replay-mode-toggle {
+  display: flex;
+  border: 1px solid var(--border, #e0e0e0);
+  border-radius: var(--radius, 6px);
+  overflow: hidden;
+}
+
+.hmi-replay-mode-toggle button {
+  border: none;
+  border-radius: 0;
+  padding: 4px 12px;
+  font-size: 12px;
+  cursor: pointer;
+  background: var(--bg-card, #fff);
+  color: inherit;
+  transition: background var(--transition, 0.2s);
+}
+
+.hmi-replay-mode-toggle button.active {
+  background: #c8102e;
+  color: #fff;
+}
+
+.hmi-replay-scrubber {
+  flex: 1;
+  min-width: 120px;
+  accent-color: #c8102e;
+}
+
+.hmi-replay-timestamp {
+  font-size: 12px;
+  font-family: "IBM Plex Mono", monospace;
+  color: var(--text-muted, #6b7280);
+  min-width: 170px;
+  text-align: right;
+}
+
+.hmi-replay-speed {
+  font-size: 11px;
+  font-weight: 600;
+  color: #c8102e;
+  min-width: 30px;
+  text-align: center;
+}
+
+.hmi-replay-toolbar-btn {
+  background: none;
+  border: 1px solid var(--border, #e0e0e0);
+  border-radius: var(--radius, 6px);
+  padding: 4px 10px;
+  cursor: pointer;
+  font-size: 13px;
+  color: inherit;
+  transition: background var(--transition, 0.2s);
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.hmi-replay-toolbar-btn:hover {
+  background: var(--border, #e0e0e0);
+}
+
+.hmi-replay-toolbar-btn.replay-active {
+  background: #c8102e;
+  color: #fff;
+  border-color: #c8102e;
+}
