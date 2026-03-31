@@ -217,16 +217,15 @@ code, pre, .mono {
   align-items: center;
   gap: 1.5rem;
   min-width: 0;
-  overflow: hidden;
+  overflow: visible;
 }
 
 .header-tabs {
   display: flex;
   align-items: center;
   gap: 2px;
-  overflow-x: auto;
-  scrollbar-width: none;
-  -ms-overflow-style: none;
+  overflow: visible;
+  flex-wrap: wrap;
 }
 
 .header-tabs::-webkit-scrollbar {
