@@ -314,24 +314,26 @@ async def predictions_list(
         '''
         tables = client.query_api().query(flux, org=org)
 
-        predictions = []
-        seen = set()
+        predictions = {}
         for table in tables:
             for record in table.records:
                 key = f"{record.values.get('device')}_{record.values.get('failure_type')}"
-                if key in seen:
-                    continue
-                seen.add(key)
                 field = record.get_field()
-                if field == "probability":
-                    predictions.append({
+                if key not in predictions:
+                    predictions[key] = {
                         "device": record.values.get("device"),
                         "failure_type": record.values.get("failure_type"),
-                        "probability": round(float(record.get_value()), 4),
-                        "alert": float(record.get_value()) > 0.7,
+                        "probability": 0.0,
+                        "alert": False,
                         "timestamp": str(record.get_time()),
                         "plant": record.values.get("plant", "default"),
-                    })
+                    }
+                if field == "probability":
+                    predictions[key]["probability"] = round(float(record.get_value()), 4)
+                    predictions[key]["alert"] = float(record.get_value()) > 0.7
+                elif field == "alert":
+                    predictions[key]["alert"] = float(record.get_value()) > 0.5
+        predictions = list(predictions.values())
 
         predictions.sort(key=lambda p: p["probability"], reverse=True)
         return {"predictions": predictions}
