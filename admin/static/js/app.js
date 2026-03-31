@@ -4361,8 +4361,9 @@ const ChatWidget = (() => {
             const resp = await fetch('/api/chat/status');
             const data = await resp.json();
             _enabled = data.enabled;
-            if (_enabled && _fab) _fab.classList.remove('hidden');
         } catch (e) {}
+        // Always show the chat button — if not configured, show setup message on open
+        if (_fab) _fab.classList.remove('hidden');
     }
 
     function toggle() {
@@ -4387,8 +4388,12 @@ const ChatWidget = (() => {
         _messages.innerHTML = '';
         _convSelect.value = '';
         _destroyCharts();
-        _addSystemMessage('Hello! Ask me anything about your plant data, alarms, or equipment status.');
-        _addSuggestions();
+        if (_enabled) {
+            _addSystemMessage('Hello! Ask me anything about your plant data, alarms, or equipment status.');
+            _addSuggestions();
+        } else {
+            _addSystemMessage('AI Assistant is available but needs an API key to answer questions. Set CHAT_API_KEY in your .env file and restart to enable live responses.\n\nBrowse previous conversations from the dropdown above to see examples of what the assistant can do.');
+        }
     }
 
     function _addSuggestions() {
