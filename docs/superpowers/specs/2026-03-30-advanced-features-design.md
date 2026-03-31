@@ -1,7 +1,7 @@
 # PLC4X Manager — Advanced Features Design Spec
 
 **Date:** 2026-03-30
-**Version:** 1.0
+**Version:** 1.1 (post-review)
 **Status:** Approved
 
 ---
@@ -15,6 +15,12 @@ Three new features for PLC4X Manager v1.1:
 3. **NLP Chat** — Natural language queries over plant data via OpenRouter LLM API
 
 All features build on existing infrastructure (InfluxDB, Konva.js HMI, ML engine, WebSocket).
+
+### Conventions
+
+- **Route pattern:** All new routes use full paths (e.g., `@router.get("/api/replay/snapshot")`), consistent with `ml_routes.py`, `data_routes.py`, and majority of existing routes.
+- **Auth decorators:** `Depends(require_admin)` for config/training, `Depends(require_operator)` for data entry, `Depends(get_current_user)` for read-only.
+- **Database migration:** Schema v1 → v2. All new tables added in a single migration block in `_run_migrations()`.
 
 ---
 
@@ -47,8 +53,18 @@ Returns all tag values for a device at a specific timestamp.
 | `timestamp` | ISO 8601 | Target moment |
 
 Query strategy:
-- Flux query on `plc4x_raw` with `|> last()` in a ±5s window around timestamp
+- Validate inputs: `_safe_flux_str(device)`, ISO 8601 regex for timestamp
+- Flux query on `plc4x_raw` with filters:
+  ```flux
+  |> range(start: timestamp - 5s, stop: timestamp + 5s)
+  |> filter(fn: (r) => r._measurement == "plc4x_tags")
+  |> filter(fn: (r) => r._field == "value")
+  |> filter(fn: (r) => r.device == device)
+  |> group(columns: ["alias"])
+  |> last()
+  ```
 - If no data in raw (>90 days), fallback to `plc4x_hourly`
+- Plant filter enforced: load config, verify `device.plant` is in `user.plants` (same pattern as `data_routes.py` line 63)
 
 Response:
 ```json
@@ -77,7 +93,17 @@ Returns a series of snapshots for DVR playback.
 | `step` | string | `5s` | Aggregation window |
 
 Query strategy:
-- Flux `|> aggregateWindow(every: step, fn: last)` on `plc4x_raw`
+- Validate inputs: `_safe_flux_str(device)`, ISO 8601 regex for start/end, step whitelist
+- Plant filter enforced (same as snapshot)
+- Flux query with measurement and field filters:
+  ```flux
+  |> range(start: start, stop: end)
+  |> filter(fn: (r) => r._measurement == "plc4x_tags")
+  |> filter(fn: (r) => r._field == "value")
+  |> filter(fn: (r) => r.device == device)
+  |> group(columns: ["alias"])
+  |> aggregateWindow(every: step, fn: last, createEmpty: false)
+  ```
 - Auto-select bucket based on range duration (same logic as `/api/tags/history`)
 - Max 720 points per request (1h at 5s, 12h at 1min, 30d at 1h)
 
@@ -129,7 +155,9 @@ New UI components added to the HMI screen view:
 - Frontend requests `/api/replay/range` once for the full period
 - All frames stored in memory (max 720 frames ≈ 500KB JSON)
 - Player iterates frames locally with `setInterval` based on speed
-- Each frame updates the Konva elements via existing `hmiUpdateTagValues()` function
+- On entering replay: call `hmiStopLiveUpdates()` to stop the live refresh timer
+- Each frame injects data into `_hmiDeviceMap` and calls `hmiUpdateAllElements()`
+- On "Back to Live": call `hmiStartLiveUpdates()` to resume real-time data
 - No per-frame API calls — smooth playback
 
 ### Data Requirements
@@ -162,6 +190,8 @@ Current ML detects anomalies but has no concept of what a "failure" is. Without 
 
 **New tables in SQLite (`admin/database.py`):**
 
+Schema version bump: v1 → v2. Add migration block in `_run_migrations()`.
+
 ```sql
 -- Catalog of known failure types per equipment class
 CREATE TABLE failure_catalog (
@@ -181,9 +211,9 @@ CREATE TABLE failure_log (
     occurred_at TEXT NOT NULL,                  -- when the failure actually happened
     device TEXT NOT NULL,
     equipment TEXT,                             -- HMI equipment name (optional)
-    failure_type TEXT NOT NULL,                 -- FK to failure_catalog.name
+    failure_type TEXT NOT NULL,                 -- validated against failure_catalog.name at app layer
     severity TEXT DEFAULT 'major',              -- minor, major, critical
-    description TEXT,                           -- free-text operator notes
+    description TEXT,                           -- free-text operator notes (render as text-only in frontend, never innerHTML)
     resolved_at TEXT,                           -- when it was fixed
     reported_by TEXT,                           -- username
     tags_snapshot TEXT                          -- JSON: tag values at moment of failure
@@ -197,7 +227,7 @@ CREATE TABLE failure_models (
     trained_at TEXT DEFAULT CURRENT_TIMESTAMP,
     sample_count INTEGER,             -- number of failure events used
     accuracy REAL,                    -- cross-validation score
-    model_blob BLOB,                  -- pickled sklearn model
+    model_path TEXT,                   -- file path to joblib-saved model (safer than pickle BLOB)
     feature_names TEXT,               -- JSON: feature column names
     status TEXT DEFAULT 'active'      -- active, superseded, failed
 );
@@ -261,16 +291,21 @@ def train_failure_model(failure_type, device):
     1. Query all failure_log entries for this type + device
     2. For each failure: extract_features() for the lookback window (positive class)
     3. For equal number of random non-failure windows: extract_features() (negative class)
+       - Negative windows: random timestamps from same device where no failure
+         occurred within 2 * lookback_hours in either direction (prevents data leakage)
+       - Must have sufficient data in InfluxDB for the window period
     4. Train GradientBoostingClassifier (sklearn)
     5. 5-fold cross-validation for accuracy
-    6. Pickle model + save to failure_models table
-    7. Return accuracy score
+    6. Save model via joblib to /app/config/models/{failure_type}_{device}_{timestamp}.joblib
+    7. Store path + metadata in failure_models table
+    8. Return accuracy score
 
-    Minimum: 5 failure events required. Below that, return error.
+    Minimum: 5 failure events required. Below that, return error with message
+    "Insufficient data: need at least 5 failure events, have {n}."
     """
 ```
 
-Model choice: **GradientBoostingClassifier** — works well with small datasets, handles mixed feature types, provides feature importance for explainability.
+Model choice: **GradientBoostingClassifier** — works well with small datasets, handles mixed feature types, provides feature importance for explainability. Models saved with `joblib` (safer than pickle, no arbitrary code execution risk).
 
 #### Prediction (runs in predictor.py cycle)
 
@@ -289,7 +324,7 @@ def predict_failures(device, tags_data):
 
 #### Integration with predictor.py
 
-Add to the main ML cycle (after existing analyses):
+Add to `run_device_analyses()` in `predictor.py` (after correlation and SHAP, which already operate at device level):
 ```python
 # Step 7: Predictive Maintenance (if models exist)
 from predictive_maintenance import predict_failures
@@ -398,7 +433,7 @@ Request:
 ```json
 {
   "message": "What was the OEE of Line 2 last week?",
-  "conversation_id": "conv_abc123"
+  "conversation_id": "conv_abc123"   // optional — backend generates UUID if omitted
 }
 ```
 
@@ -524,7 +559,10 @@ CREATE TABLE chat_history (
 );
 ```
 
-Retention: auto-prune conversations older than 30 days (in hourly maintenance job).
+Retention: auto-prune conversations older than 30 days. Add to `db_maintenance_loop()` in `database.py`:
+```sql
+DELETE FROM chat_history WHERE timestamp < datetime('now', '-30 days');
+```
 
 ### Frontend
 
@@ -548,11 +586,16 @@ Retention: auto-prune conversations older than 30 days (in hourly maintenance jo
 ### Security
 
 - JWT required (any authenticated role can use chat)
-- Rate limit: 10 requests/minute per user (enforced in backend)
+- Rate limit: 10 requests/minute per user via `slowapi` with JWT subject as key function
 - API key never exposed to frontend — all LLM calls proxied through backend
 - Tool calls restricted to internal read-only APIs (no writes via chat)
+- Tool call loop depth: max 5 iterations (prevents infinite tool-call loops from misbehaving LLM)
+- Tool parameters validated with `_safe_flux_str()` before execution (prevents Flux injection via LLM)
+- User message length capped at 2000 characters (prevents prompt abuse)
+- System prompt sent as `role: "system"` message, never embedded in user content
 - Conversation history filtered by user (operators only see their own chats)
 - Admin can see all conversations via `/api/chat/history?all=true`
+- Free-text fields rendered as `textContent` in frontend (never `innerHTML`) to prevent XSS
 
 ### Fallback Chain (detailed)
 
@@ -606,4 +649,5 @@ Phases are independent and can be implemented in any order. Recommended: 1 → 2
 | `admin/static/css/hmi.css` | Replay bar styles |
 | `ml/predictor.py` | Add predictive maintenance step to ML cycle |
 | `.env.example` | Add CHAT_* variables |
-| `admin/requirements.txt` | Add httpx (async HTTP for OpenRouter) |
+| `admin/requirements.txt` | Add httpx (async HTTP for OpenRouter), joblib |
+| `ml/requirements.txt` | Add joblib (if not already present) |
