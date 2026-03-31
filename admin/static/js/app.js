@@ -4248,3 +4248,211 @@ async function triggerTraining() {
     } catch (e) { statusEl.textContent = "Error: " + e.message; statusEl.style.color = "#c8102e"; }
     finally { btn.disabled = false; }
 }
+
+// =============================================
+// Chat Widget — AI Assistant
+// =============================================
+
+const ChatWidget = (() => {
+    let _enabled = false;
+    let _convId = null;
+    let _conversations = [];
+    let _sending = false;
+    let _chartInstances = [];
+    let _fab, _panel, _messages, _input, _sendBtn, _convSelect;
+
+    function inject() {
+        const fab = document.createElement('button');
+        fab.className = 'chat-fab hidden';
+        fab.innerHTML = '&#x1F4AC;';
+        fab.title = 'AI Assistant';
+        fab.onclick = toggle;
+        document.body.appendChild(fab);
+        _fab = fab;
+
+        const panel = document.createElement('div');
+        panel.className = 'chat-panel';
+        panel.innerHTML = `
+            <div class="chat-header">
+                <div class="chat-header-title"><span>AI Assistant</span></div>
+                <div class="chat-header-actions">
+                    <button onclick="ChatWidget.newChat()" title="New conversation">+</button>
+                    <button onclick="ChatWidget.toggle()" title="Close">&times;</button>
+                </div>
+            </div>
+            <div class="chat-conv-bar">
+                <select id="chat-conv-select" onchange="ChatWidget.switchConversation(this.value)">
+                    <option value="">New conversation</option>
+                </select>
+            </div>
+            <div class="chat-messages" id="chat-messages"></div>
+            <div class="chat-input-area">
+                <input type="text" id="chat-input" placeholder="Ask about your plant data..." maxlength="2000" onkeydown="if(event.key==='Enter')ChatWidget.send()">
+                <button id="chat-send-btn" onclick="ChatWidget.send()" title="Send">&#x27A4;</button>
+            </div>
+        `;
+        document.body.appendChild(panel);
+        _panel = panel;
+        _messages = document.getElementById('chat-messages');
+        _input = document.getElementById('chat-input');
+        _sendBtn = document.getElementById('chat-send-btn');
+        _convSelect = document.getElementById('chat-conv-select');
+    }
+
+    async function checkStatus() {
+        try {
+            const resp = await fetch('/api/chat/status');
+            const data = await resp.json();
+            _enabled = data.enabled;
+            if (_enabled && _fab) _fab.classList.remove('hidden');
+        } catch (e) {}
+    }
+
+    function toggle() {
+        if (!_panel) return;
+        _panel.classList.toggle('open');
+        if (_panel.classList.contains('open')) { _input.focus(); loadConversations(); }
+    }
+
+    function newChat() {
+        _convId = null;
+        _messages.innerHTML = '';
+        _convSelect.value = '';
+        _destroyCharts();
+        _addSystemMessage('Hello! Ask me anything about your plant data, alarms, or equipment status.');
+    }
+
+    async function loadConversations() {
+        try {
+            const token = localStorage.getItem('jwt_token');
+            if (!token) return;
+            const resp = await fetch('/api/chat/history?limit=5', { headers: { 'Authorization': 'Bearer ' + token } });
+            if (!resp.ok) return;
+            const data = await resp.json();
+            _conversations = data.conversations || [];
+            _renderConvSelect();
+        } catch (e) {}
+    }
+
+    function _renderConvSelect() {
+        if (!_convSelect) return;
+        const current = _convSelect.value;
+        _convSelect.innerHTML = '<option value="">New conversation</option>';
+        _conversations.forEach(c => {
+            const opt = document.createElement('option');
+            opt.value = c.conversation_id;
+            opt.textContent = c.preview || ('Chat ' + c.conversation_id.substring(0, 8));
+            _convSelect.appendChild(opt);
+        });
+        _convSelect.value = current;
+    }
+
+    function switchConversation(convId) {
+        if (!convId) { newChat(); return; }
+        _convId = convId;
+        _messages.innerHTML = '';
+        _destroyCharts();
+        _addSystemMessage('Conversation loaded. Continue asking questions.');
+    }
+
+    async function send() {
+        if (_sending) return;
+        const text = (_input.value || '').trim();
+        if (!text) return;
+        _input.value = '';
+        _sending = true;
+        _sendBtn.disabled = true;
+        _addMessage('user', text);
+        const typingEl = _addTyping();
+
+        try {
+            const token = localStorage.getItem('jwt_token');
+            const resp = await fetch('/api/chat/ask', {
+                method: 'POST',
+                headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
+                body: JSON.stringify({ message: text, conversation_id: _convId }),
+            });
+            if (typingEl && typingEl.parentNode) typingEl.remove();
+
+            if (!resp.ok) {
+                const err = await resp.json().catch(() => ({}));
+                _addMessage('assistant', err.detail || 'An error occurred.');
+                return;
+            }
+
+            const data = await resp.json();
+            _convId = data.conversation_id;
+            _addMessage('assistant', data.reply || 'No response.', data.model_used);
+            if (data.chart) _renderChart(data.chart);
+            loadConversations();
+        } catch (e) {
+            if (typingEl && typingEl.parentNode) typingEl.remove();
+            _addMessage('assistant', 'Network error. Please check your connection.');
+        } finally {
+            _sending = false;
+            _sendBtn.disabled = false;
+            _input.focus();
+        }
+    }
+
+    function _addMessage(role, text, modelUsed) {
+        const div = document.createElement('div');
+        div.className = 'chat-msg ' + role;
+        const textNode = document.createElement('span');
+        textNode.textContent = text;
+        div.appendChild(textNode);
+        if (role === 'assistant' && modelUsed) {
+            const tag = document.createElement('span');
+            tag.className = 'chat-model-tag';
+            tag.textContent = modelUsed;
+            div.appendChild(tag);
+        }
+        _messages.appendChild(div);
+        _messages.scrollTop = _messages.scrollHeight;
+        return div;
+    }
+
+    function _addSystemMessage(text) {
+        const div = document.createElement('div');
+        div.className = 'chat-msg assistant';
+        div.textContent = text;
+        _messages.appendChild(div);
+    }
+
+    function _addTyping() {
+        const div = document.createElement('div');
+        div.className = 'chat-typing';
+        div.innerHTML = 'Thinking <span class="chat-typing-dots"><span>.</span><span>.</span><span>.</span></span>';
+        _messages.appendChild(div);
+        _messages.scrollTop = _messages.scrollHeight;
+        return div;
+    }
+
+    function _renderChart(chartData) {
+        if (!chartData || !chartData.values || !chartData.values.length) return;
+        if (typeof Chart === 'undefined') return;
+        const container = document.createElement('div');
+        container.className = 'chat-chart-container';
+        const canvas = document.createElement('canvas');
+        container.appendChild(canvas);
+        _messages.appendChild(container);
+        _messages.scrollTop = _messages.scrollHeight;
+        const labels = chartData.labels.map(l => { try { return new Date(l).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}); } catch(e) { return l; } });
+        const chart = new Chart(canvas, {
+            type: 'line',
+            data: { labels, datasets: [{ label: chartData.label || 'Value', data: chartData.values, borderColor: '#c8102e', backgroundColor: 'rgba(200,16,46,0.08)', fill: true, tension: 0.3, pointRadius: 0, borderWidth: 2 }] },
+            options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: true, position: 'top', labels: { font: { size: 11 } } } }, scales: { x: { display: true, ticks: { maxTicksLimit: 6, font: { size: 10 } } }, y: { display: true, ticks: { font: { size: 10 } } } } },
+        });
+        _chartInstances.push(chart);
+    }
+
+    function _destroyCharts() { _chartInstances.forEach(c => { try { c.destroy(); } catch(e) {} }); _chartInstances = []; }
+
+    return { init: () => { inject(); checkStatus(); }, toggle, newChat, send, switchConversation, loadConversations };
+})();
+
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', () => ChatWidget.init());
+} else {
+    ChatWidget.init();
+}

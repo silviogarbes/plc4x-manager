@@ -44,6 +44,23 @@ _MAX_MESSAGE_LENGTH = 2000
 _MAX_TOOL_ITERATIONS = 5
 _CONTEXT_MESSAGES = 20
 
+# Simple per-user rate limiter (10 requests per 60 seconds)
+import time as _time
+_chat_rate: dict[str, list[float]] = {}
+_CHAT_RATE_LIMIT = 10
+_CHAT_RATE_WINDOW = 60
+
+
+def _check_rate_limit(username: str) -> bool:
+    now = _time.time()
+    if username not in _chat_rate:
+        _chat_rate[username] = []
+    _chat_rate[username] = [t for t in _chat_rate[username] if now - t < _CHAT_RATE_WINDOW]
+    if len(_chat_rate[username]) >= _CHAT_RATE_LIMIT:
+        return False
+    _chat_rate[username].append(now)
+    return True
+
 
 class ChatAskRequest(BaseModel):
     message: str = Field(..., max_length=_MAX_MESSAGE_LENGTH)
@@ -93,6 +110,9 @@ async def chat_ask(body: ChatAskRequest, request: Request, user: CurrentUser = D
     """Process a chat question with LLM + tool calling."""
     if not _llm.enabled:
         raise HTTPException(status_code=503, detail="Chat not configured (CHAT_API_KEY not set)")
+
+    if not _check_rate_limit(user.username):
+        raise HTTPException(status_code=429, detail="Rate limit exceeded (10 requests/minute). Please wait.")
 
     if len(body.message.strip()) == 0:
         raise HTTPException(status_code=400, detail="Message cannot be empty")
