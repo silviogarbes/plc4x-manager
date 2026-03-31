@@ -4416,7 +4416,7 @@ const ChatWidget = (() => {
 
     async function loadConversations() {
         try {
-            const token = localStorage.getItem('jwt_token');
+            const token = getToken();
             if (!token) return;
             const resp = await fetch('/api/chat/history?limit=5', { headers: { 'Authorization': 'Bearer ' + token } });
             if (!resp.ok) return;
@@ -4461,7 +4461,7 @@ const ChatWidget = (() => {
         const typingEl = _addTyping();
 
         try {
-            const token = localStorage.getItem('jwt_token');
+            const token = getToken();
             const resp = await fetch('/api/chat/ask', {
                 method: 'POST',
                 headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
