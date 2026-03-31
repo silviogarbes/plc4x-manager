@@ -116,6 +116,7 @@ document.addEventListener("DOMContentLoaded", () => {
     }
     // Verify token is still valid
     api("/api/auth/verify").then(() => {
+        updateAdminMenuVisibility();
         loadDashboard();
         loadServiceStatus();
         loadConfig();
@@ -230,9 +231,55 @@ function toast(message, type = "success") {
 // Tabs
 // =============================================
 
+function toggleMoreMenu(evt) {
+    if (evt) evt.stopPropagation();
+    const menu = document.getElementById("moreMenu");
+    if (menu) menu.classList.toggle("open");
+}
+
+// Close More menu when clicking outside
+document.addEventListener("click", function(e) {
+    const menu = document.getElementById("moreMenu");
+    if (menu && menu.classList.contains("open")) {
+        if (!e.target.closest(".tab-more-wrapper")) {
+            menu.classList.remove("open");
+        }
+    }
+});
+
+function showTabFromMore(name, evt) {
+    // Close the dropdown
+    const menu = document.getElementById("moreMenu");
+    if (menu) menu.classList.remove("open");
+
+    // Clear active state from all More items and set on clicked
+    document.querySelectorAll(".tab-more-item").forEach(el => el.classList.remove("active-more"));
+    if (evt && evt.target) evt.target.classList.add("active-more");
+
+    // Highlight the "More" button to show a sub-tab is active
+    const moreBtn = document.querySelector(".tab-more-btn");
+    if (moreBtn) { moreBtn.classList.add("active"); moreBtn.textContent = "More \u25BE"; }
+
+    showTab(name, { target: moreBtn });
+}
+
+function updateAdminMenuVisibility() {
+    const isAdmin = (getRole() === "admin");
+    document.querySelectorAll(".tab-admin-only").forEach(el => {
+        el.style.display = isAdmin ? "" : "none";
+    });
+    // Hide the "Administration" group label if not admin
+    document.querySelectorAll(".tab-more-group-label").forEach(el => {
+        if (el.textContent.trim() === "Administration") {
+            el.style.display = isAdmin ? "" : "none";
+        }
+    });
+}
+
 function showTab(name, evt) {
     document.querySelectorAll(".tab-content").forEach(el => el.style.display = "none");
     document.querySelectorAll(".tab").forEach(el => el.classList.remove("active"));
+    document.querySelectorAll(".tab-more-item").forEach(el => el.classList.remove("active-more"));
     document.getElementById(`tab-${name}`).style.display = "block";
     if (evt && evt.target) evt.target.classList.add("active");
 

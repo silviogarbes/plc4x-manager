@@ -19,21 +19,29 @@
         <nav class="header-tabs">
             <button class="tab active" onclick="showTab('dashboard',event)">Dashboard</button>
             <button class="tab" onclick="showTab('live',event)">Live Data</button>
-            <button class="tab" onclick="showTab('devices',event)">Devices</button>
-            <button class="tab" onclick="showTab('server',event)">OPC-UA Server</button>
-            <button class="tab" onclick="showTab('security',event)">Security</button>
-            <button class="tab" onclick="showTab('logs',event)">Logs</button>
-            <button class="tab" onclick="showTab('backups',event)">Backups</button>
             <button class="tab" onclick="showTab('hmi',event)">HMI</button>
             <button class="tab" onclick="showTab('alarms',event)" id="alarmsTabBtn">Alarms</button>
             <button class="tab" onclick="showTab('oee',event)">OEE</button>
-            <button class="tab" onclick="showTab('reports',event)">Reports</button>
-            <button class="tab" onclick="showTab('audit',event)">Audit</button>
-            <button class="tab" onclick="showTab('logbook',event)">Logbook</button>
-            <button class="tab" onclick="showTab('analytics',event)">Analytics</button>
-            <button class="tab" onclick="showTab('ml',event)">AI / ML</button>
             <button class="tab" onclick="showTab('maintenance',event)">Maintenance</button>
-            <button class="tab" onclick="showTab('apidocs',event)">API</button>
+            <div class="tab-more-wrapper">
+                <button class="tab tab-more-btn" onclick="toggleMoreMenu(event)">More &#x25BE;</button>
+                <div class="tab-more-menu" id="moreMenu">
+                    <div class="tab-more-group-label">Intelligence</div>
+                    <button class="tab-more-item" onclick="showTabFromMore('analytics',event)">Analytics</button>
+                    <button class="tab-more-item" onclick="showTabFromMore('ml',event)">AI / ML</button>
+                    <button class="tab-more-item" onclick="showTabFromMore('reports',event)">Reports</button>
+                    <div class="tab-more-group-label">Records</div>
+                    <button class="tab-more-item" onclick="showTabFromMore('logbook',event)">Logbook</button>
+                    <button class="tab-more-item" onclick="showTabFromMore('audit',event)">Audit</button>
+                    <div class="tab-more-group-label">Administration</div>
+                    <button class="tab-more-item tab-admin-only" onclick="showTabFromMore('devices',event)">Devices</button>
+                    <button class="tab-more-item tab-admin-only" onclick="showTabFromMore('server',event)">OPC-UA Server</button>
+                    <button class="tab-more-item tab-admin-only" onclick="showTabFromMore('security',event)">Security</button>
+                    <button class="tab-more-item tab-admin-only" onclick="showTabFromMore('backups',event)">Backups</button>
+                    <button class="tab-more-item tab-admin-only" onclick="showTabFromMore('logs',event)">Logs</button>
+                    <button class="tab-more-item tab-admin-only" onclick="showTabFromMore('apidocs',event)">API</button>
+                </div>
+            </div>
         </nav>
     </div>
     <div class="header-status">

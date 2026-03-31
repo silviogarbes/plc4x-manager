@@ -257,6 +257,71 @@ code, pre, .mono {
   font-weight: 600;
 }
 
+/* More dropdown */
+.tab-more-wrapper {
+  position: relative;
+  display: inline-flex;
+}
+.tab-more-btn {
+  gap: 4px;
+}
+.tab-more-menu {
+  display: none;
+  position: absolute;
+  top: 100%;
+  right: 0;
+  z-index: 2000;
+  background: var(--card-bg, #fff);
+  border: 1px solid var(--border);
+  border-radius: var(--radius, 6px);
+  box-shadow: 0 8px 24px rgba(0,0,0,0.15);
+  min-width: 180px;
+  padding: 6px 0;
+  margin-top: 4px;
+}
+.tab-more-menu.open {
+  display: block;
+}
+.tab-more-group-label {
+  padding: 8px 14px 4px;
+  font-size: 0.65rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-muted, #888);
+  border-top: 1px solid var(--border);
+  margin-top: 2px;
+}
+.tab-more-group-label:first-child {
+  border-top: none;
+  margin-top: 0;
+}
+.tab-more-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 7px 14px;
+  font-size: 0.82rem;
+  font-weight: 500;
+  color: var(--text);
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-family: inherit;
+  transition: background 0.12s;
+}
+.tab-more-item:hover {
+  background: var(--bg, #f4f4f4);
+  color: var(--primary);
+}
+.tab-more-item.active-more {
+  color: var(--primary);
+  font-weight: 700;
+}
+.tab-more-item.tab-admin-only {
+  /* Hidden by default for non-admin, shown via JS */
+}
+
 .header-inner {
   display: flex;
   align-items: center;
