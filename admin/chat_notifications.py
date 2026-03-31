@@ -20,11 +20,11 @@ log = logging.getLogger("chat_notifications")
 
 # Cooldown: don't send the same type of notification more than once per N seconds
 _COOLDOWNS = {
-    "alarm_critical": 300,      # 5 min between critical alarm notifications
-    "alarm_warning": 600,       # 10 min
-    "ml_anomaly": 900,          # 15 min
-    "prediction_alert": 1800,   # 30 min
-    "oee_drop": 1800,           # 30 min
+    "alarm_critical": 120,      # 2 min between critical alarm notifications
+    "alarm_warning": 300,       # 5 min
+    "ml_anomaly": 600,          # 10 min
+    "prediction_alert": 900,    # 15 min
+    "oee_drop": 900,            # 15 min
 }
 
 _last_sent: dict[str, float] = {}
@@ -159,7 +159,7 @@ async def check_and_notify(app) -> list[dict]:
 async def notification_loop(app, ws_manager) -> None:
     """Background loop that checks events and broadcasts notifications."""
     log.info("Chat notification loop started")
-    await asyncio.sleep(30)  # Wait for system to stabilize
+    await asyncio.sleep(10)  # Wait for system to stabilize
 
     while True:
         try:
@@ -170,4 +170,4 @@ async def notification_loop(app, ws_manager) -> None:
         except Exception as e:
             log.debug(f"Notification loop error: {e}")
 
-        await asyncio.sleep(30)  # Check every 30 seconds
+        await asyncio.sleep(15)  # Check every 15 seconds

@@ -78,8 +78,11 @@ function _handleWsMessage(data) {
         _updateAlarmBadgeFromWs(data);
     }
     if (data.type === "chat_notification" && data.notification) {
+        console.log("[WS] Chat notification received:", data.notification.title);
         if (typeof ChatWidget !== "undefined" && ChatWidget.onNotification) {
             ChatWidget.onNotification(data.notification);
+        } else {
+            console.warn("[WS] ChatWidget not ready for notification");
         }
     }
 }
