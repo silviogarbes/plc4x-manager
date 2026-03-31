@@ -283,3 +283,85 @@ async def train_model(request: Request, body: dict, user: CurrentUser = Depends(
             return result
 
     raise HTTPException(status_code=504, detail="Training timed out after 5 minutes")
+
+
+@router.get("/api/failures/predictions")
+async def predictions_list(
+    request: Request,
+    device: str = Query(default=""),
+    user: CurrentUser = Depends(get_current_user),
+):
+    """Get active failure predictions from InfluxDB (last ML cycle)."""
+    from influx import _get_influx_client, _safe_flux_str
+
+    try:
+        client = _get_influx_client()
+        org = os.environ.get("INFLUXDB_ORG", "plc4x")
+        bucket = os.environ.get("INFLUXDB_BUCKET", "plc4x_raw")
+
+        device_filter = ""
+        if device:
+            safe_device = _safe_flux_str(device)
+            device_filter = f'|> filter(fn: (r) => r.device == "{safe_device}")'
+
+        flux = f'''
+        from(bucket: "{bucket}")
+          |> range(start: -1h)
+          |> filter(fn: (r) => r._measurement == "plc4x_ml")
+          |> filter(fn: (r) => r.analysis == "failure_prediction")
+          {device_filter}
+          |> last()
+        '''
+        tables = client.query_api().query(flux, org=org)
+
+        predictions = []
+        seen = set()
+        for table in tables:
+            for record in table.records:
+                key = f"{record.values.get('device')}_{record.values.get('failure_type')}"
+                if key in seen:
+                    continue
+                seen.add(key)
+                field = record.get_field()
+                if field == "probability":
+                    predictions.append({
+                        "device": record.values.get("device"),
+                        "failure_type": record.values.get("failure_type"),
+                        "probability": round(float(record.get_value()), 4),
+                        "alert": float(record.get_value()) > 0.7,
+                        "timestamp": str(record.get_time()),
+                        "plant": record.values.get("plant", "default"),
+                    })
+
+        predictions.sort(key=lambda p: p["probability"], reverse=True)
+        return {"predictions": predictions}
+
+    except Exception as e:
+        return {"predictions": [], "error": str(e)}
+
+
+@router.get("/api/failures/models")
+async def models_list(
+    request: Request,
+    user: CurrentUser = Depends(get_current_user),
+):
+    """List trained failure prediction models."""
+    db = request.app.state.db
+    async with db.execute(
+        "SELECT * FROM failure_models ORDER BY trained_at DESC"
+    ) as cursor:
+        rows = await cursor.fetchall()
+
+    models = []
+    for row in rows:
+        models.append({
+            "id": row["id"],
+            "failure_type": row["failure_type"],
+            "device": row["device"],
+            "trained_at": row["trained_at"],
+            "sample_count": row["sample_count"],
+            "accuracy": round(row["accuracy"], 4) if row["accuracy"] else None,
+            "feature_names": json.loads(row["feature_names"]) if row["feature_names"] else [],
+            "status": row["status"],
+        })
+    return {"models": models}
