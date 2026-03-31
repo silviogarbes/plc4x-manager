@@ -345,6 +345,7 @@ from routes.version_routes import router as version_router
 from routes.ml_routes import router as ml_router
 from routes.plctag_routes import router as plctag_router
 from routes.replay_routes import router as replay_router
+from routes.failure_routes import router as failure_router
 
 # Phase 1.2
 app.include_router(auth_router)
@@ -367,3 +368,4 @@ app.include_router(plc4x_router)
 app.include_router(ml_router)
 app.include_router(plctag_router)
 app.include_router(replay_router)
+app.include_router(failure_router)

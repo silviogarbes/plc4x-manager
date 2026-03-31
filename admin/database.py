@@ -114,6 +114,53 @@ async def _run_migrations(db):
         await db.commit()
         log.info("Applied migration v1: initial schema")
 
+    if current < 2:
+        await db.executescript("""
+            CREATE TABLE IF NOT EXISTS failure_catalog (
+                id INTEGER PRIMARY KEY,
+                name TEXT UNIQUE NOT NULL,
+                display_name TEXT NOT NULL,
+                description TEXT,
+                lookback_hours INTEGER DEFAULT 72,
+                related_tags TEXT,
+                created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+            );
+
+            CREATE TABLE IF NOT EXISTS failure_log (
+                id INTEGER PRIMARY KEY,
+                timestamp TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+                occurred_at TEXT NOT NULL,
+                device TEXT NOT NULL,
+                equipment TEXT,
+                failure_type TEXT NOT NULL,
+                severity TEXT DEFAULT 'major',
+                description TEXT,
+                resolved_at TEXT,
+                reported_by TEXT,
+                tags_snapshot TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_failure_log_device ON failure_log(device);
+            CREATE INDEX IF NOT EXISTS idx_failure_log_type ON failure_log(failure_type);
+            CREATE INDEX IF NOT EXISTS idx_failure_log_ts ON failure_log(occurred_at);
+
+            CREATE TABLE IF NOT EXISTS failure_models (
+                id INTEGER PRIMARY KEY,
+                failure_type TEXT NOT NULL,
+                device TEXT NOT NULL,
+                trained_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+                sample_count INTEGER,
+                accuracy REAL,
+                model_path TEXT,
+                feature_names TEXT,
+                status TEXT DEFAULT 'active'
+            );
+            CREATE INDEX IF NOT EXISTS idx_failure_models_type ON failure_models(failure_type);
+            CREATE INDEX IF NOT EXISTS idx_failure_models_device ON failure_models(device);
+        """)
+        await db.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (2)")
+        await db.commit()
+        log.info("Applied migration v2: predictive maintenance tables")
+
 
 async def close_db(db):
     """Close database connection."""
@@ -159,6 +206,14 @@ async def db_maintenance_loop(db):
             async with db.execute("DELETE FROM logbook_entries WHERE timestamp < ?", (cutoff,)) as c:
                 if c.rowcount > 0:
                     log.info(f"Pruned {c.rowcount} old logbook entries")
+            await db.commit()
+
+            # Prune failure_log entries older than 5 years
+            cutoff_5y = (datetime.datetime.now(datetime.timezone.utc)
+                         - datetime.timedelta(days=1825)).isoformat()
+            async with db.execute("DELETE FROM failure_log WHERE occurred_at < ?", (cutoff_5y,)) as c:
+                if c.rowcount > 0:
+                    log.info(f"Pruned {c.rowcount} old failure log entries")
             await db.commit()
         except Exception as e:
             log.error(f"DB maintenance error: {e}")
