@@ -77,6 +77,11 @@ function _handleWsMessage(data) {
     if (data.type === "alarm_sync" || (data.type === "mqtt" && data.topic && data.topic.includes("_alarms"))) {
         _updateAlarmBadgeFromWs(data);
     }
+    if (data.type === "chat_notification" && data.notification) {
+        if (typeof ChatWidget !== "undefined" && ChatWidget.onNotification) {
+            ChatWidget.onNotification(data.notification);
+        }
+    }
 }
 
 function _updateAlarmBadgeFromWs(data) {
@@ -4563,7 +4568,72 @@ const ChatWidget = (() => {
 
     function _destroyCharts() { _chartInstances.forEach(c => { try { c.destroy(); } catch(e) {} }); _chartInstances = []; }
 
-    return { init: () => { inject(); checkStatus(); }, toggle, newChat, send, switchConversation, loadConversations };
+    let _unreadCount = 0;
+    let _pendingNotifications = [];
+
+    function onNotification(notif) {
+        _pendingNotifications.push(notif);
+        _unreadCount++;
+        _updateBadge();
+
+        // If panel is open, show immediately
+        if (_panel && _panel.classList.contains('open')) {
+            _showNotification(notif);
+            _unreadCount = 0;
+            _updateBadge();
+        }
+    }
+
+    function _showNotification(notif) {
+        const sevColor = notif.severity === 'critical' ? '#c8102e' : notif.severity === 'warning' ? '#e8a317' : '#3b82f6';
+        const div = document.createElement('div');
+        div.className = 'chat-msg assistant';
+        div.style.borderLeft = `4px solid ${sevColor}`;
+        const title = document.createElement('strong');
+        title.textContent = notif.title;
+        title.style.color = sevColor;
+        div.appendChild(title);
+        div.appendChild(document.createElement('br'));
+        const body = document.createElement('span');
+        body.textContent = notif.message;
+        div.appendChild(body);
+        const ts = document.createElement('span');
+        ts.className = 'chat-model-tag';
+        ts.textContent = new Date(notif.timestamp).toLocaleTimeString();
+        div.appendChild(ts);
+        _messages.appendChild(div);
+        _messages.scrollTop = _messages.scrollHeight;
+    }
+
+    function _updateBadge() {
+        let badge = _fab ? _fab.querySelector('.chat-badge') : null;
+        if (_unreadCount > 0) {
+            if (!badge && _fab) {
+                badge = document.createElement('span');
+                badge.className = 'chat-badge';
+                _fab.appendChild(badge);
+            }
+            if (badge) badge.textContent = _unreadCount > 9 ? '9+' : _unreadCount;
+            if (_fab) _fab.classList.add('chat-fab-pulse');
+        } else {
+            if (badge) badge.remove();
+            if (_fab) _fab.classList.remove('chat-fab-pulse');
+        }
+    }
+
+    // Override toggle to clear badge and show pending notifications
+    const _origToggle = toggle;
+    function toggleWithBadge() {
+        _origToggle();
+        if (_panel && _panel.classList.contains('open') && _pendingNotifications.length > 0) {
+            _pendingNotifications.forEach(n => _showNotification(n));
+            _pendingNotifications = [];
+            _unreadCount = 0;
+            _updateBadge();
+        }
+    }
+
+    return { init: () => { inject(); checkStatus(); }, toggle: toggleWithBadge, newChat, send, switchConversation, loadConversations, onNotification };
 })();
 
 if (document.readyState === 'loading') {

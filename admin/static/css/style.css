@@ -2718,6 +2718,31 @@ small {
     box-shadow: 0 6px 20px rgba(0,0,0,0.3);
 }
 .chat-fab.hidden { display: none; }
+.chat-badge {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  background: #c8102e;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  min-width: 20px;
+  height: 20px;
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 5px;
+  border: 2px solid #fff;
+  line-height: 1;
+}
+.chat-fab-pulse {
+  animation: chatFabPulse 2s ease-in-out infinite;
+}
+@keyframes chatFabPulse {
+  0%, 100% { box-shadow: 0 4px 12px rgba(0,0,0,0.25); }
+  50% { box-shadow: 0 4px 20px rgba(200,16,46,0.5), 0 0 0 8px rgba(200,16,46,0.1); }
+}
 
 .chat-panel {
     position: fixed;

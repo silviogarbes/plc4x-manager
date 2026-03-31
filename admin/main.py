@@ -170,6 +170,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         # Start MQTT→WebSocket bridge in a daemon thread
         loop = asyncio.get_running_loop()
         threading.Thread(target=_start_mqtt_ws_bridge, args=(loop,), daemon=True).start()
+
+        # Start proactive chat notifications
+        from chat_notifications import notification_loop
+        asyncio.create_task(notification_loop(app, manager))
     else:
         log.info("HTTPS instance: skipping background tasks (handled by HTTP instance)")
 
