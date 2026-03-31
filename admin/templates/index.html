@@ -32,6 +32,7 @@
             <button class="tab" onclick="showTab('logbook',event)">Logbook</button>
             <button class="tab" onclick="showTab('analytics',event)">Analytics</button>
             <button class="tab" onclick="showTab('ml',event)">AI / ML</button>
+            <button class="tab" onclick="showTab('maintenance',event)">Maintenance</button>
             <button class="tab" onclick="showTab('apidocs',event)">API</button>
         </nav>
     </div>
@@ -1104,6 +1105,98 @@
             </details>
         </div>
 
+    </div>
+
+    <!-- Tab: Maintenance -->
+    <div id="tab-maintenance" class="tab-content" style="display:none">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+            <h2 style="margin:0">Predictive Maintenance</h2>
+            <div>
+                <button class="btn btn-primary" onclick="showReportFailureModal()" id="reportFailureBtn" style="display:none">Report Failure</button>
+                <button class="btn" onclick="loadMaintenance()">Refresh</button>
+            </div>
+        </div>
+        <h3 style="margin:16px 0 8px">Active Predictions</h3>
+        <div id="maintenancePredictions" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:12px">
+            <p style="color:var(--text-muted)">No predictions available. Train a model first.</p>
+        </div>
+        <h3 style="margin:24px 0 8px">Failure Log</h3>
+        <div style="margin-bottom:8px">
+            <select id="failureLogDeviceFilter" onchange="loadFailureLog()" style="padding:4px 8px;border:1px solid var(--border);border-radius:4px">
+                <option value="">All Devices</option>
+            </select>
+            <select id="failureLogTypeFilter" onchange="loadFailureLog()" style="padding:4px 8px;border:1px solid var(--border);border-radius:4px;margin-left:4px">
+                <option value="">All Types</option>
+            </select>
+        </div>
+        <div id="maintenanceFailureLog" style="overflow-x:auto">
+            <table class="table" id="failureLogTable">
+                <thead><tr><th>Time</th><th>Device</th><th>Type</th><th>Severity</th><th>Description</th><th>Resolved</th><th>Reported By</th><th></th></tr></thead>
+                <tbody></tbody>
+            </table>
+        </div>
+        <div id="maintenanceCatalogSection" style="display:none">
+            <h3 style="margin:24px 0 8px">Failure Catalog <button class="btn btn-sm" onclick="showAddCatalogModal()" style="margin-left:8px;font-size:0.75rem">+ Add Type</button></h3>
+            <div id="maintenanceCatalog" style="overflow-x:auto">
+                <table class="table" id="catalogTable">
+                    <thead><tr><th>Name</th><th>Display Name</th><th>Lookback (h)</th><th>Related Tags</th><th></th></tr></thead>
+                    <tbody></tbody>
+                </table>
+            </div>
+        </div>
+        <h3 style="margin:24px 0 8px">Trained Models</h3>
+        <div id="maintenanceModels" style="overflow-x:auto">
+            <table class="table" id="modelsTable">
+                <thead><tr><th>Failure Type</th><th>Device</th><th>Trained At</th><th>Samples</th><th>Accuracy</th><th>Status</th></tr></thead>
+                <tbody></tbody>
+            </table>
+        </div>
+        <div id="maintenanceTrainSection" style="display:none;margin-top:16px">
+            <h3 style="margin:0 0 8px">Train Model</h3>
+            <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+                <select id="trainFailureType" style="padding:6px 10px;border:1px solid var(--border);border-radius:4px"><option value="">Select failure type...</option></select>
+                <input id="trainDevice" type="text" placeholder="Device name" style="padding:6px 10px;border:1px solid var(--border);border-radius:4px;width:200px">
+                <button class="btn btn-primary" onclick="triggerTraining()" id="trainBtn">Train Model</button>
+                <span id="trainStatus" style="color:var(--text-muted);font-size:0.85rem"></span>
+            </div>
+        </div>
+    </div>
+
+    <!-- Report Failure Modal -->
+    <div id="reportFailureModal" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.5);z-index:1000;align-items:center;justify-content:center">
+        <div style="background:var(--bg);border-radius:8px;padding:24px;max-width:500px;width:90%;max-height:80vh;overflow-y:auto;box-shadow:0 4px 20px rgba(0,0,0,0.2)">
+            <h3 style="margin:0 0 16px">Report Equipment Failure</h3>
+            <div style="display:flex;flex-direction:column;gap:12px">
+                <div><label style="font-weight:600;font-size:0.85rem">Occurred At *</label><input id="rfOccurredAt" type="datetime-local" style="width:100%;padding:6px 10px;border:1px solid var(--border);border-radius:4px;margin-top:4px"></div>
+                <div><label style="font-weight:600;font-size:0.85rem">Device *</label><input id="rfDevice" type="text" placeholder="e.g., Demo-Simulated" style="width:100%;padding:6px 10px;border:1px solid var(--border);border-radius:4px;margin-top:4px"></div>
+                <div><label style="font-weight:600;font-size:0.85rem">Failure Type *</label><select id="rfFailureType" style="width:100%;padding:6px 10px;border:1px solid var(--border);border-radius:4px;margin-top:4px"><option value="">Select...</option></select></div>
+                <div><label style="font-weight:600;font-size:0.85rem">Severity</label><select id="rfSeverity" style="width:100%;padding:6px 10px;border:1px solid var(--border);border-radius:4px;margin-top:4px"><option value="minor">Minor</option><option value="major" selected>Major</option><option value="critical">Critical</option></select></div>
+                <div><label style="font-weight:600;font-size:0.85rem">Equipment</label><input id="rfEquipment" type="text" placeholder="e.g., Motor 3A" style="width:100%;padding:6px 10px;border:1px solid var(--border);border-radius:4px;margin-top:4px"></div>
+                <div><label style="font-weight:600;font-size:0.85rem">Description</label><textarea id="rfDescription" rows="3" placeholder="What happened..." style="width:100%;padding:6px 10px;border:1px solid var(--border);border-radius:4px;margin-top:4px;resize:vertical"></textarea></div>
+            </div>
+            <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:16px">
+                <button class="btn" onclick="closeReportFailureModal()">Cancel</button>
+                <button class="btn btn-primary" onclick="submitFailureReport()">Report</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Add Catalog Entry Modal -->
+    <div id="addCatalogModal" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.5);z-index:1000;align-items:center;justify-content:center">
+        <div style="background:var(--bg);border-radius:8px;padding:24px;max-width:450px;width:90%;box-shadow:0 4px 20px rgba(0,0,0,0.2)">
+            <h3 style="margin:0 0 16px">Add Failure Type</h3>
+            <div style="display:flex;flex-direction:column;gap:12px">
+                <div><label style="font-weight:600;font-size:0.85rem">Name (slug) *</label><input id="acName" type="text" placeholder="e.g., bearing_failure" style="width:100%;padding:6px 10px;border:1px solid var(--border);border-radius:4px;margin-top:4px"></div>
+                <div><label style="font-weight:600;font-size:0.85rem">Display Name *</label><input id="acDisplayName" type="text" placeholder="e.g., Bearing Failure" style="width:100%;padding:6px 10px;border:1px solid var(--border);border-radius:4px;margin-top:4px"></div>
+                <div><label style="font-weight:600;font-size:0.85rem">Description</label><input id="acDescription" type="text" placeholder="Optional" style="width:100%;padding:6px 10px;border:1px solid var(--border);border-radius:4px;margin-top:4px"></div>
+                <div><label style="font-weight:600;font-size:0.85rem">Lookback Hours</label><input id="acLookback" type="number" value="72" min="1" max="720" style="width:100%;padding:6px 10px;border:1px solid var(--border);border-radius:4px;margin-top:4px"></div>
+                <div><label style="font-weight:600;font-size:0.85rem">Related Tags (comma-separated)</label><input id="acRelatedTags" type="text" placeholder="e.g., motor_temp, vibration" style="width:100%;padding:6px 10px;border:1px solid var(--border);border-radius:4px;margin-top:4px"></div>
+            </div>
+            <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:16px">
+                <button class="btn" onclick="closeAddCatalogModal()">Cancel</button>
+                <button class="btn btn-primary" onclick="submitCatalogEntry()">Create</button>
+            </div>
+        </div>
     </div>
 
     <!-- Tab: API Docs -->

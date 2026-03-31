@@ -258,6 +258,7 @@ function showTab(name, evt) {
     }
     if (name === "analytics") loadGrafanaDashboard();
     if (name === "ml") loadML();
+    if (name === "maintenance") loadMaintenance();
     if (name === "reports") loadReportFilters();
     if (name === "apidocs") loadSwaggerUI();
     if (name === "logs") loadLogs();
@@ -4038,4 +4039,212 @@ function importDiscoveredTags(tags) {
     } else {
         toast("All selected tags are already configured", "warn");
     }
+}
+
+// =============================================
+// Maintenance Tab
+// =============================================
+
+async function loadMaintenance() {
+    const isAdmin = (window._userRole === "admin");
+    const isOperator = (window._userRole === "admin" || window._userRole === "operator");
+    const catalogSection = document.getElementById("maintenanceCatalogSection");
+    const trainSection = document.getElementById("maintenanceTrainSection");
+    const reportBtn = document.getElementById("reportFailureBtn");
+    if (catalogSection) catalogSection.style.display = isAdmin ? "" : "none";
+    if (trainSection) trainSection.style.display = isAdmin ? "" : "none";
+    if (reportBtn) reportBtn.style.display = isOperator ? "" : "none";
+    await Promise.all([loadPredictions(), loadFailureLog(), loadFailureCatalog(), loadFailureModels()]);
+}
+
+async function loadPredictions() {
+    try {
+        const resp = await apiFetch("/api/failures/predictions");
+        const data = await resp.json();
+        const container = document.getElementById("maintenancePredictions");
+        if (!data.predictions || data.predictions.length === 0) {
+            container.innerHTML = '<p style="color:var(--text-muted)">No predictions available. Train a model first.</p>';
+            return;
+        }
+        container.innerHTML = data.predictions.map(p => {
+            const pct = (p.probability * 100).toFixed(1);
+            const color = p.alert ? "#c8102e" : pct > 40 ? "#e8a317" : "#28a745";
+            const bg = p.alert ? "rgba(200,16,46,0.08)" : "transparent";
+            return `<div style="border:1px solid var(--border);border-radius:8px;padding:16px;background:${bg};border-left:4px solid ${color}">
+                <div style="display:flex;justify-content:space-between;align-items:center">
+                    <strong>${p.failure_type.replace(/_/g, " ")}</strong>
+                    <span style="font-size:1.4rem;font-weight:700;color:${color}">${pct}%</span>
+                </div>
+                <div style="font-size:0.85rem;color:var(--text-muted);margin-top:4px">${p.device}${p.alert ? ' \u2014 <strong style="color:#c8102e">ALERT</strong>' : ""}</div>
+                <div style="font-size:0.75rem;color:var(--text-muted);margin-top:4px">${new Date(p.timestamp).toLocaleString()}</div>
+            </div>`;
+        }).join("");
+    } catch (e) { console.error("Failed to load predictions:", e); }
+}
+
+async function loadFailureLog() {
+    try {
+        const device = document.getElementById("failureLogDeviceFilter")?.value || "";
+        const ftype = document.getElementById("failureLogTypeFilter")?.value || "";
+        let url = "/api/failures?lines=100";
+        if (device) url += "&device=" + encodeURIComponent(device);
+        if (ftype) url += "&failure_type=" + encodeURIComponent(ftype);
+        const resp = await apiFetch(url);
+        const data = await resp.json();
+        const tbody = document.querySelector("#failureLogTable tbody");
+        if (!data.entries || data.entries.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;color:var(--text-muted)">No failures reported yet</td></tr>';
+            return;
+        }
+        tbody.innerHTML = data.entries.map(e => {
+            const sevColor = e.severity === "critical" ? "#c8102e" : e.severity === "major" ? "#e8a317" : "#6c757d";
+            const isOp = (window._userRole === "admin" || window._userRole === "operator");
+            const actions = isOp && !e.resolved_at ? `<button class="btn btn-sm" onclick="resolveFailure(${e.id})" style="font-size:0.7rem">Resolve</button>` : "";
+            return `<tr>
+                <td style="white-space:nowrap">${new Date(e.occurred_at).toLocaleString()}</td>
+                <td>${e.device}</td>
+                <td>${e.failure_type.replace(/_/g, " ")}</td>
+                <td><span style="color:${sevColor};font-weight:600">${e.severity}</span></td>
+                <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis">${e.description || "-"}</td>
+                <td>${e.resolved_at ? new Date(e.resolved_at).toLocaleString() : '<span style="color:#c8102e">Open</span>'}</td>
+                <td>${e.reported_by || "-"}</td>
+                <td>${actions}</td>
+            </tr>`;
+        }).join("");
+    } catch (e) { console.error("Failed to load failure log:", e); }
+}
+
+async function loadFailureCatalog() {
+    try {
+        const resp = await apiFetch("/api/failures/catalog");
+        const data = await resp.json();
+        const tbody = document.querySelector("#catalogTable tbody");
+        const trainSelect = document.getElementById("trainFailureType");
+        const rfSelect = document.getElementById("rfFailureType");
+        const typeFilter = document.getElementById("failureLogTypeFilter");
+        const currentFilter = typeFilter ? typeFilter.value : "";
+        if (typeFilter) {
+            typeFilter.innerHTML = '<option value="">All Types</option>';
+            (data.catalog || []).forEach(c => { typeFilter.innerHTML += `<option value="${c.name}" ${c.name === currentFilter ? "selected" : ""}>${c.display_name}</option>`; });
+        }
+        if (trainSelect) {
+            trainSelect.innerHTML = '<option value="">Select failure type...</option>';
+            (data.catalog || []).forEach(c => { trainSelect.innerHTML += `<option value="${c.name}">${c.display_name}</option>`; });
+        }
+        if (rfSelect) {
+            rfSelect.innerHTML = '<option value="">Select...</option>';
+            (data.catalog || []).forEach(c => { rfSelect.innerHTML += `<option value="${c.name}">${c.display_name}</option>`; });
+        }
+        if (!data.catalog || data.catalog.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:var(--text-muted)">No failure types defined</td></tr>';
+            return;
+        }
+        tbody.innerHTML = data.catalog.map(c => `<tr>
+            <td><code>${c.name}</code></td><td>${c.display_name}</td><td>${c.lookback_hours}</td>
+            <td>${(c.related_tags || []).join(", ") || "-"}</td>
+            <td><button class="btn btn-sm" onclick="deleteCatalogEntry(${c.id},'${c.name}')" style="font-size:0.7rem;color:#c8102e">Delete</button></td>
+        </tr>`).join("");
+    } catch (e) { console.error("Failed to load catalog:", e); }
+}
+
+async function loadFailureModels() {
+    try {
+        const resp = await apiFetch("/api/failures/models");
+        const data = await resp.json();
+        const tbody = document.querySelector("#modelsTable tbody");
+        if (!data.models || data.models.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--text-muted)">No trained models</td></tr>';
+            return;
+        }
+        tbody.innerHTML = data.models.map(m => {
+            const statusColor = m.status === "active" ? "#28a745" : "#6c757d";
+            return `<tr>
+                <td>${m.failure_type.replace(/_/g, " ")}</td><td>${m.device}</td>
+                <td>${new Date(m.trained_at).toLocaleString()}</td><td>${m.sample_count}</td>
+                <td>${m.accuracy !== null ? (m.accuracy * 100).toFixed(1) + "%" : "-"}</td>
+                <td><span style="color:${statusColor};font-weight:600">${m.status}</span></td>
+            </tr>`;
+        }).join("");
+    } catch (e) { console.error("Failed to load models:", e); }
+}
+
+function showReportFailureModal() {
+    document.getElementById("reportFailureModal").style.display = "flex";
+    const now = new Date(); now.setMinutes(now.getMinutes() - now.getTimezoneOffset());
+    document.getElementById("rfOccurredAt").value = now.toISOString().slice(0, 16);
+}
+function closeReportFailureModal() { document.getElementById("reportFailureModal").style.display = "none"; }
+
+async function submitFailureReport() {
+    const occurredAt = document.getElementById("rfOccurredAt").value;
+    const device = document.getElementById("rfDevice").value.trim();
+    const failureType = document.getElementById("rfFailureType").value;
+    const severity = document.getElementById("rfSeverity").value;
+    const equipment = document.getElementById("rfEquipment").value.trim();
+    const description = document.getElementById("rfDescription").value.trim();
+    if (!occurredAt || !device || !failureType) { alert("Occurred At, Device, and Failure Type are required."); return; }
+    try {
+        const resp = await apiFetch("/api/failures", {
+            method: "POST", headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({ occurred_at: new Date(occurredAt).toISOString(), device, failure_type: failureType, severity, equipment, description })
+        });
+        if (!resp.ok) { const err = await resp.json(); alert(err.detail || "Failed"); return; }
+        closeReportFailureModal(); loadFailureLog();
+    } catch (e) { alert("Error: " + e.message); }
+}
+
+async function resolveFailure(id) {
+    if (!confirm("Mark this failure as resolved now?")) return;
+    try {
+        await apiFetch(`/api/failures/${id}`, { method: "PUT", headers: {"Content-Type": "application/json"}, body: JSON.stringify({resolved_at: new Date().toISOString()}) });
+        loadFailureLog();
+    } catch (e) { alert("Error: " + e.message); }
+}
+
+function showAddCatalogModal() { document.getElementById("addCatalogModal").style.display = "flex"; }
+function closeAddCatalogModal() { document.getElementById("addCatalogModal").style.display = "none"; }
+
+async function submitCatalogEntry() {
+    const name = document.getElementById("acName").value.trim();
+    const displayName = document.getElementById("acDisplayName").value.trim();
+    const description = document.getElementById("acDescription").value.trim();
+    const lookback = parseInt(document.getElementById("acLookback").value) || 72;
+    const tagsStr = document.getElementById("acRelatedTags").value.trim();
+    const relatedTags = tagsStr ? tagsStr.split(",").map(t => t.trim()).filter(Boolean) : [];
+    if (!name || !displayName) { alert("Name and Display Name are required."); return; }
+    try {
+        const resp = await apiFetch("/api/failures/catalog", {
+            method: "POST", headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({name, display_name: displayName, description, lookback_hours: lookback, related_tags: relatedTags})
+        });
+        if (!resp.ok) { const err = await resp.json(); alert(err.detail || "Failed"); return; }
+        closeAddCatalogModal(); loadFailureCatalog();
+    } catch (e) { alert("Error: " + e.message); }
+}
+
+async function deleteCatalogEntry(id, name) {
+    if (!confirm(`Delete failure type "${name}"?`)) return;
+    try { await apiFetch(`/api/failures/catalog/${id}`, {method: "DELETE"}); loadFailureCatalog(); }
+    catch (e) { alert("Error: " + e.message); }
+}
+
+async function triggerTraining() {
+    const failureType = document.getElementById("trainFailureType").value;
+    const device = document.getElementById("trainDevice").value.trim();
+    const statusEl = document.getElementById("trainStatus");
+    const btn = document.getElementById("trainBtn");
+    if (!failureType || !device) { alert("Select a failure type and enter a device name."); return; }
+    btn.disabled = true;
+    statusEl.textContent = "Training in progress... This may take a few minutes.";
+    statusEl.style.color = "var(--text-muted)";
+    try {
+        const resp = await apiFetch("/api/failures/train", {
+            method: "POST", headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({failure_type: failureType, device})
+        });
+        const data = await resp.json();
+        if (!resp.ok) { statusEl.textContent = "Error: " + (data.detail || "Training failed"); statusEl.style.color = "#c8102e"; }
+        else { statusEl.textContent = `Done! Accuracy: ${(data.accuracy * 100).toFixed(1)}%, Samples: ${data.samples}`; statusEl.style.color = "#28a745"; loadFailureModels(); }
+    } catch (e) { statusEl.textContent = "Error: " + e.message; statusEl.style.color = "#c8102e"; }
+    finally { btn.disabled = false; }
 }
