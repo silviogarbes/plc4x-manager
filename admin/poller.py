@@ -993,13 +993,34 @@ def poller_loop():
         log.info("Poller loop exited, connection cleaned up")
 
 
+EIP_CACHE_PATH = os.path.join(os.path.dirname(CACHE_PATH), ".eip-live-cache.json")
+
+
 def get_cache():
-    """Read the cache (called by the API)."""
+    """Read the cache (called by the API). Merges OPC-UA and EIP poller caches."""
     try:
         with open(CACHE_PATH, "r", encoding="utf-8") as f:
-            return json.load(f)
+            data = json.load(f)
     except Exception:
-        return {"server": "", "devices": [], "error": "Poller not started yet", "lastUpdate": None}
+        data = {"server": "", "devices": [], "error": "Poller not started yet", "lastUpdate": None}
+
+    # Merge EIP poller cache (written by plctag_poller.py in server container)
+    try:
+        with open(EIP_CACHE_PATH, "r", encoding="utf-8") as f:
+            eip = json.load(f)
+        eip_devices = {d["name"]: d for d in eip.get("devices", [])}
+        # Replace or add EIP devices into main cache
+        existing_names = {d["name"] for d in data.get("devices", [])}
+        for name, eip_dev in eip_devices.items():
+            if name in existing_names:
+                # Replace the OPC-UA version (which shows read_error) with EIP data
+                data["devices"] = [eip_dev if d["name"] == name else d for d in data["devices"]]
+            else:
+                data["devices"].append(eip_dev)
+    except Exception:
+        pass  # EIP cache not available yet
+
+    return data
 
 
 if __name__ == "__main__":

@@ -17,6 +17,10 @@ done
 echo "[Server] Starting pylogix service on port 5000..."
 python3 /app/plctag_service.py &
 
+# Start EtherNet/IP poller for EIP devices (bypasses PLC4X Java EIP bug)
+echo "[Server] Starting EtherNet/IP poller..."
+python3 /app/plctag_poller.py &
+
 # If the security files do not exist, bootstrap with -i -t
 # This creates certificates and credentials with default values (admin/password)
 if [ ! -f "$PASSWORD_FILE" ]; then
